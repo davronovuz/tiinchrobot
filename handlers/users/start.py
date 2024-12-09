@@ -14,12 +14,12 @@ async def bot_start(message: types.Message):
         user_db.add_user(telegram_id=telegram_id, username=username)
         welcome_text = (
             f"🌟 Salom va xush kelibsiz, {message.from_user.full_name}! 🎉\n\n"
-            "🤖 <b>Tinchrobot</b> – <i>'Maksimal tinchlikni xohlovchilar uchun'</i> yaratilgan botga xush kelibsiz! 🕊️✨\n\n"
-            "🚀 Bu yerda sizni kutayotgan xizmatlar:\n"
+            "🤖 <b>Tinchrobot</b> – <i>'Maksimal tinchlikni xohlovchilar uchun'</i> 🕊️✨\n\n"
+            "🚀 Sizni kutayotgan xizmatlar:\n"
             "📸 Instagram: Postlar, Reels, Stories yuklash\n"
             "🎵 TikTok: Videolar va Musiqalar yuklash\n"
             "🎯 Havolani yuboring va dam oling – biz hammasini hal qilamiz! 😌\n\n"
-            "👉 <i>Bu yerda maksimal tinchlikni saqlash uchun – @tinchrobot</i>ni tanlang! 🕊️"
+            "👉 <i>Maksimal tinchlikni saqlash uchun – @tinchrobot</i>ni tanlang! 🕊️"
         )
         await message.answer(welcome_text, parse_mode="HTML")
     else:
@@ -29,6 +29,6 @@ async def bot_start(message: types.Message):
             f"🌟 Assalomu alaykum, {message.from_user.full_name}! 🎉\n\n"
             "🤖 Sizni yana <b>Tinchrobot</b>da ko'rishdan xursandmiz! 🕊️\n"
             "🎯 Faqat havolani yuboring va biz kontentingizni tezda yuklaymiz. 🚀\n\n"
-            "🕊️ Maksimal tinchlikni xohlovchilar uchun – bu yerda faqat @tinchrobot! 😊"
+            "🕊️ Maksimal tinchlikni xohlovchilar uchun –  @tinchrobot xizmatda 😊"
         )
         await message.answer(welcome_back_text, parse_mode="HTML")
