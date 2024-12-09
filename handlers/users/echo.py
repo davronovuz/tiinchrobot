@@ -122,8 +122,8 @@ async def process_and_send_media(medias: list, message: types.Message):
 async def send_media(file, media_format, message):
     """Media jo'natish."""
     caption = (
-        "✨ @tinchrobot – <b>Tinchlikni xohlovchilar uchun!</b> 🕊️\n"
-        "🚀 Yuklab olishning qulay va tezkor yechimi!"
+        "✨ @tinchrobot – <b>Tinchlikni xohlovchilar uchun!</b> ️\n"
+
     )
     if media_format == "image":
         return await message.answer_photo(InputFile(file), caption=caption, parse_mode="HTML")
