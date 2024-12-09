@@ -13,22 +13,22 @@ async def bot_start(message: types.Message):
         # Yangi foydalanuvchini bazaga qo'shish
         user_db.add_user(telegram_id=telegram_id, username=username)
         welcome_text = (
-            f"👋 Assalomu alaykum, {message.from_user.full_name}! \n\n"
-            "<b>UFASTBOT</b> – siz uchun eng qulay va tezkor yuklab olish vositasi!🌟\n\n"
-            "📸 <b>Instagram:</b> Postlar, Reels, Stories\n"
-            "🎵 <b>TikTok:</b> Videolar va Musiqalar\n"
-            "🎯 Havolani yuboring – yuklab oling! Tezkorlik uchun yagona tanlov\n\n"
-            "<i>Obuna talab qilmaydigan yagona tezkor bot – @ufastbot</i>"
+            f"🌟 Salom va xush kelibsiz, {message.from_user.full_name}! 🎉\n\n"
+            "🤖 <b>Tinchrobot</b> – <i>'Maksimal tinchlikni xohlovchilar uchun'</i> yaratilgan botga xush kelibsiz! 🕊️✨\n\n"
+            "🚀 Bu yerda sizni kutayotgan xizmatlar:\n"
+            "📸 Instagram: Postlar, Reels, Stories yuklash\n"
+            "🎵 TikTok: Videolar va Musiqalar yuklash\n"
+            "🎯 Havolani yuboring va dam oling – biz hammasini hal qilamiz! 😌\n\n"
+            "👉 <i>Bu yerda maksimal tinchlikni saqlash uchun – @tinchrobot</i>ni tanlang! 🕊️"
         )
-
         await message.answer(welcome_text, parse_mode="HTML")
     else:
         # Foydalanuvchini qayta kelganligini yangilash va xush kelibsiz xabarini yuborish
         user_db.update_user_last_active(telegram_id=telegram_id)
         welcome_back_text = (
-            f"👋 Yana salom, {message.from_user.full_name}! \n\n"
-            "🎉 <b>UFASTBOT</b> bilan kontent yuklashni davom eting:\n"
-            "📸 Instagram | 🎵 TikTok \n"
-            "Havolani yuboring va tezkor yuklab oling! 😊"
+            f"🌟 Assalomu alaykum, {message.from_user.full_name}! 🎉\n\n"
+            "🤖 Sizni yana <b>Tinchrobot</b>da ko'rishdan xursandmiz! 🕊️\n"
+            "🎯 Faqat havolani yuboring va biz kontentingizni tezda yuklaymiz. 🚀\n\n"
+            "🕊️ Maksimal tinchlikni xohlovchilar uchun – bu yerda faqat @tinchrobot! 😊"
         )
         await message.answer(welcome_back_text, parse_mode="HTML")
