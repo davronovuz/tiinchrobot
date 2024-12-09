@@ -259,6 +259,7 @@ async def clear_callback_handler(callback_query: CallbackQuery):
 
 # Yuklab olish tugmasi bosilganda
 # Yuklab olish tugmasi bosilganda
+# Yuklab olish tugmasi bosilganda
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith("download:"))
 async def download_callback_handler(callback_query: CallbackQuery):
     logging.info(f"download_callback_handler chaqirildi: {callback_query.data}")
@@ -290,7 +291,7 @@ async def download_callback_handler(callback_query: CallbackQuery):
                         file_data.name = f"{music_info['artist']} - {music_info['title']}.mp3"
 
                         # Matnni shakllantirish
-                        caption_text = "Obuna talab qilmaydigan yagona tezkor bot – @ufastbot | TEZKOR YUKLASH"
+                        caption_text = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun! 🕊️"
 
                         await bot.send_audio(
                             chat_id=callback_query.message.chat.id,
@@ -313,4 +314,5 @@ async def download_callback_handler(callback_query: CallbackQuery):
             await callback_query.answer("Yuklab olish havolasi topilmadi.")
     else:
         await callback_query.answer("Noto'g'ri ma'lumot.")
+
 
