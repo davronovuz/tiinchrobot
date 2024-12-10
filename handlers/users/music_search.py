@@ -1,6 +1,9 @@
 import httpx
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
+
+from keyboards.default.menu_i import world_track, top_track, main_btn
+from utils.misc.download_file import  world_music, main_data, top_music, new_trek
 from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -10,6 +13,76 @@ from aiogram.utils import executor
 from io import BytesIO
 import logging
 from loader import dp,bot
+
+
+
+
+
+@dp.message_handler(commands='tiktok')
+async def tik_tok_handler(msg: types.Message):
+    text = 'Siz uchun top 10 Tik-Tok Musiqalar!\n\n'
+    sana = 1
+    for i in world_music():
+        text += f"{str(sana)}. {i['artist']} - {i['title']}\n"
+        sana += 1
+    await msg.answer(text=text, reply_markup=world_track())
+
+
+@dp.callback_query_handler(lambda x: x.data in [i['id'] for i in world_music()])
+async def tik_tok_callback(callback: types.CallbackQuery):
+    user_id = callback.data
+    for i in world_music():
+        if i['id'] == user_id:
+            await callback.message.answer_audio(i['track'], f"{i['artist']} - {i['title']}")
+
+
+@dp.message_handler(commands='top')
+async def top_handler(msg: types.Message):
+    text = 'Siz uchun top 10 Musiqalar!\n\n'
+    sana = 1
+    for i in top_music():
+        text += f"{str(sana)}. {i['artist']} - {i['title']}\n"
+        sana += 1
+    await msg.answer(text=text, reply_markup=top_track())
+
+
+@dp.callback_query_handler(lambda msg: msg.data in [i['id'] for i in top_music()])
+async def welcome(callback: types.CallbackQuery):
+    region_id = callback.data
+    for i in top_music():
+        if i['id'] == region_id:
+            await callback.message.answer_audio(i['track'], f"{i['artist']} - {i['title']}")
+
+
+@dp.message_handler(commands='new')
+async def new_music_handler(msg: types.Message):
+    text = 'Siz uchun 10 yangi Musiqalar!\n\n'
+    sana = 1
+    for i in new_trek():
+        text += f"{str(sana)}. {i['artist']} - {i['title']}\n"
+        sana += 1
+    await msg.answer(text=text, reply_markup=main_btn())
+
+
+@dp.callback_query_handler(lambda x: x.data in [i['id'] for i in new_trek()])
+async def new_callback_handler(callback: types.CallbackQuery):
+    data_id = callback.data
+    for i in new_trek():
+        if data_id == i['id']:
+            await callback.message.answer_audio(i['track'], f"{i['artist']} - {i['title']}")
+
+
+@dp.callback_query_handler(lambda msg: msg.data == 'remove')
+async def remove(callback: types.CallbackQuery):
+    await callback.message.delete()
+
+
+
+
+
+
+
+
 # Foydalanuvchi qidiruv natijalarini saqlash uchun lug'at
 user_results = {}
 

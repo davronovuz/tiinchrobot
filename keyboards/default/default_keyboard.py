@@ -1,5 +1,13 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+
+
+
+
+
+
+
+
 # Asosiy admin menyusi uchun tugmalar
 menu_admin = ReplyKeyboardMarkup(
     keyboard=[
