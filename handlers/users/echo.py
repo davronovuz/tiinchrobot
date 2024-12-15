@@ -152,7 +152,7 @@ async def handle_all_platforms(message: types.Message, url: str, platform: str, 
 async def process_and_send_media(message: types.Message, media: dict, platform: str, url: str, caption: str, audio_medias: list):
     """
     Videoni yuklab yuborish, hajmini tekshirish.
-    Agar audio ham bo'lsa, inline tugma orqali audio yuklash imkoniyati.
+    Agar audio ham bo'lsa, videodan keyin darhol audioni ham yuboradi.
     """
     media_url = media.get('url')
     file_path = await download_media('video', media_url)
@@ -168,20 +168,27 @@ async def process_and_send_media(message: types.Message, media: dict, platform: 
         return
 
     input_file = InputFile(file_path)
-
-    # Agar audio mavjud bo'lsa, inline button
-    if audio_medias:
-        audio_url = audio_medias[0].get('url')
-        keyboard = InlineKeyboardMarkup().add(
-            InlineKeyboardButton("🎵 Audio yuklab olish", callback_data=f"download_audio|{audio_url}|{platform}|{url}")
-        )
-        sent_msg = await message.answer_video(input_file, caption=caption, parse_mode="HTML", reply_markup=keyboard)
-    else:
-        sent_msg = await message.answer_video(input_file, caption=caption, parse_mode="HTML")
+    sent_msg = await message.answer_video(input_file, caption=caption, parse_mode="HTML")
 
     if sent_msg.video:
         cache_db.add_cache(platform, url, sent_msg.video.file_id)
     os.unlink(file_path)
+
+    # Agar audio mavjud bo'lsa, videodan so'ng uni ham yuboramiz
+    if audio_medias:
+        # Bitta audio ni olamiz (birinchisi)
+        audio = audio_medias[0]
+        a_url = audio.get('url')
+        a_file_path = await download_media('audio', a_url)
+        if not a_file_path:
+            await message.answer("❌ Audioni yuklab bo'lmadi.")
+            return
+
+        a_sent_msg = await message.answer_audio(InputFile(a_file_path), caption=caption, parse_mode="HTML")
+        if a_sent_msg.audio:
+            cache_db.add_cache(platform, url, a_sent_msg.audio.file_id)
+        os.unlink(a_file_path)
+
 
 async def send_images_group(message: types.Message, image_medias: list, platform: str, url: str, caption: str):
     """
@@ -268,29 +275,6 @@ async def download_media(media_type: str, media_url: str) -> str:
         logger.error(f"Error downloading media: {e}")
         return ""
 
-@dp.callback_query_handler(lambda c: c.data.startswith("download_audio|"))
-async def download_audio_callback_handler(callback_query: types.CallbackQuery):
-    """
-    Inline tugma bosilganda audio yuklab berish.
-    callback_data: "download_audio|<audio_url>|<platform>|<url>"
-    """
-    data = callback_query.data.split("|")
-    if len(data) < 4:
-        await callback_query.answer("Xatolik yuz berdi")
-        return
-    _, audio_url, platform, orig_url = data
-
-    await callback_query.answer("Yuklab berayapman, iltimos kuting...")
-
-    file_path = await download_media('audio', audio_url)
-    caption = f"✨ {hd.bold('@tinchrobot')} – Tinchlikni xohlovchilar uchun!"
-    if file_path:
-        sent_msg = await bot.send_audio(chat_id=callback_query.message.chat.id, audio=InputFile(file_path), caption=caption, parse_mode="HTML")
-        if sent_msg.audio:
-            cache_db.add_cache(platform, orig_url, sent_msg.audio.file_id)
-        os.unlink(file_path)
-    else:
-        await bot.send_message(callback_query.message.chat.id, "❌ Audioni yuklab bo'lmadi.")
 
 async def send_cached_media(message: types.Message, file_id: str):
     """
