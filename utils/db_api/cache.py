@@ -31,6 +31,14 @@ class MediaCacheDatabase(Database):
         """
         self.execute(sql_stats, commit=True)
 
+    def get_file_ids_by_url(self, url: str):
+        """
+        Berilgan URL bo'yicha barcha file_id va media_type ni qaytaradi.
+        """
+        sql = "SELECT file_id, media_type FROM MediaCache WHERE url = ?"
+        results = self.execute(sql, parameters=(url,), fetchall=True)
+        return [(row["file_id"], row["media_type"]) for row in results] if results else []
+
     # Media uchun funksiyalar
     def add_cache(self, platform: str, url: str, file_id: str):
         """
