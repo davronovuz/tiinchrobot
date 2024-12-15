@@ -86,9 +86,10 @@ async def remove(callback: types.CallbackQuery):
 # Foydalanuvchi qidiruv natijalarini saqlash uchun lug'at
 user_results = {}
 
-# xitmuzon.net saytidan qo'shiq qidirish funksiyasi
-async def search_music_xitmuzon(query):
-    search_url = f"https://xitmuzon.net/index.php?do=search&subaction=search&story={query}"
+
+# muztv.uz saytidan qo'shiq qidirish funksiyasi
+async def search_music_muztv(query):
+    search_url = f"https://muztv.uz/index.php?do=search&subaction=search&story={query}"
     results = []
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -102,45 +103,7 @@ async def search_music_xitmuzon(query):
                 soup = BeautifulSoup(response.text, "html.parser")
 
                 # Qidiruv natijalarini chiqarish
-                for item in soup.find_all("div", class_="track-item"):
-                    title = item.get("data-title")
-                    artist = item.get("data-artist")
-                    url = item.find("a", class_="track-dl")["href"]
-
-                    if title and artist and url:
-                        # To'liq URL yaratish
-                        if url.startswith("/"):
-                            url = f"https://xitmuzon.net{url}"
-
-                        results.append(
-                            {
-                                "title": title,
-                                "artist": artist,
-                                "url": url,
-                                "source": "xitmuzon",
-                            }
-                        )
-        except Exception as e:
-            logging.error(f"Ma'lumot olishda xatolik (xitmuzon.net): {e}")
-    return results
-
-# uzhits.net saytidan qo'shiq qidirish funksiyasi
-async def search_music_uzhits(query):
-    search_url = f"https://uzhits.net/index.php?do=search&subaction=search&story={query}"
-    results = []
-
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        try:
-            response = await client.get(
-                search_url,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=30.0,
-            )
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-
-                # Qidiruv natijalarini chiqarish
-                for item in soup.find_all("div", class_="track-item"):
+                for item in soup.find_all("div", class_="play-item"):
                     title = item.get("data-title")
                     artist = item.get("data-artist")
                     url = item.get("data-track")
@@ -148,33 +111,116 @@ async def search_music_uzhits(query):
                     if title and artist and url:
                         # To'liq URL yaratish
                         if url.startswith("/"):
-                            url = f"https://uzhits.net{url}"
+                            url = f"https://muztv.uz{url}"
 
                         results.append(
                             {
                                 "title": title,
                                 "artist": artist,
                                 "url": url,
-                                "source": "uzhits",
+                                "source": "muztv",
                             }
                         )
         except Exception as e:
-            logging.error(f"Ma'lumot olishda xatolik (uzhits.net): {e}")
+            logging.error(f"Ma'lumot olishda xatolik (muztv.uz): {e}")
     return results
 
+
+# # xitmuzon.net saytidan qo'shiq qidirish funksiyasi
+# async def search_music_xitmuzon(query):
+#     search_url = f"https://xitmuzon.net/index.php?do=search&subaction=search&story={query}"
+#     results = []
+#
+#     async with httpx.AsyncClient(follow_redirects=True) as client:
+#         try:
+#             response = await client.get(
+#                 search_url,
+#                 headers={"User-Agent": "Mozilla/5.0"},
+#                 timeout=30.0,
+#             )
+#             if response.status_code == 200:
+#                 soup = BeautifulSoup(response.text, "html.parser")
+#
+#                 # Qidiruv natijalarini chiqarish
+#                 for item in soup.find_all("div", class_="track-item"):
+#                     title = item.get("data-title")
+#                     artist = item.get("data-artist")
+#                     url = item.find("a", class_="track-dl")["href"]
+#
+#                     if title and artist and url:
+#                         # To'liq URL yaratish
+#                         if url.startswith("/"):
+#                             url = f"https://xitmuzon.net{url}"
+#
+#                         results.append(
+#                             {
+#                                 "title": title,
+#                                 "artist": artist,
+#                                 "url": url,
+#                                 "source": "xitmuzon",
+#                             }
+#                         )
+#         except Exception as e:
+#             logging.error(f"Ma'lumot olishda xatolik (xitmuzon.net): {e}")
+#     return results
+
+# # uzhits.net saytidan qo'shiq qidirish funksiyasi
+# async def search_music_uzhits(query):
+#     search_url = f"https://uzhits.net/index.php?do=search&subaction=search&story={query}"
+#     results = []
+#
+#     async with httpx.AsyncClient(follow_redirects=True) as client:
+#         try:
+#             response = await client.get(
+#                 search_url,
+#                 headers={"User-Agent": "Mozilla/5.0"},
+#                 timeout=30.0,
+#             )
+#             if response.status_code == 200:
+#                 soup = BeautifulSoup(response.text, "html.parser")
+#
+#                 # Qidiruv natijalarini chiqarish
+#                 for item in soup.find_all("div", class_="track-item"):
+#                     title = item.get("data-title")
+#                     artist = item.get("data-artist")
+#                     url = item.get("data-track")
+#
+#                     if title and artist and url:
+#                         # To'liq URL yaratish
+#                         if url.startswith("/"):
+#                             url = f"https://uzhits.net{url}"
+#
+#                         results.append(
+#                             {
+#                                 "title": title,
+#                                 "artist": artist,
+#                                 "url": url,
+#                                 "source": "uzhits",
+#                             }
+#                         )
+#         except Exception as e:
+#             logging.error(f"Ma'lumot olishda xatolik (uzhits.net): {e}")
+#     return results
+
+# Umumiy qidiruv funksiyasi
 # Umumiy qidiruv funksiyasi
 async def search_music(query):
     results = []
 
-    # xitmuzon.net saytidan qidirish
-    xitmuzon_results = await search_music_xitmuzon(query)
-    results.extend(xitmuzon_results)
+    # # xitmuzon.net saytidan qidirish
+    # xitmuzon_results = await search_music_xitmuzon(query)
+    # results.extend(xitmuzon_results)
+    #
+    # # uzhits.net saytidan qidirish
+    # uzhits_results = await search_music_uzhits(query)
+    # results.extend(uzhits_results)
 
-    # uzhits.net saytidan qidirish
-    uzhits_results = await search_music_uzhits(query)
-    results.extend(uzhits_results)
+    # muztv.uz saytidan qidirish
+    muztv_results = await search_music_muztv(query)
+    results.extend(muztv_results)
 
     return results
+
 
 # Xabarni qayta ishlash
 @dp.message_handler()
