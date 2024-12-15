@@ -89,10 +89,17 @@ user_results = {}
 
 # muztv.uz saytidan qo'shiq qidirish funksiyasi
 async def search_music_muztv(query):
+<<<<<<< HEAD
     search_url = f"https://muztv.uz/index.php?do=search&subaction=search&story={query}"
     results = []
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
+=======
+    search_url = f"http://muztv.uz/index.php?do=search&subaction=search&story={query}"
+    results = []
+
+    async with httpx.AsyncClient(verify=False,follow_redirects=True) as client:
+>>>>>>> 9aef6a17b5b071bdb6491fabf34408de0f998d2e
         try:
             response = await client.get(
                 search_url,
@@ -206,6 +213,10 @@ async def search_music_uzhits(query):
 # Umumiy qidiruv funksiyasi
 async def search_music(query):
     results = []
+
+    # muztv.uz saytidan qidirish (boshida ishlaydi)
+    muztv_results = await search_music_muztv(query)
+    results.extend(muztv_results)
 
     # xitmuzon.net saytidan qidirish
     xitmuzon_results = await search_music_xitmuzon(query)

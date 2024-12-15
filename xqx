@@ -1,0 +1,72 @@
+[33mcommit 4ecf78423022d4122990101ba77fc5a2b80dec00[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m
+Merge: 4fb3735 c3484a3
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Wed Dec 11 08:35:17 2024 +0100
+
+    Konflikt hal qilindi: requirements.txt
+
+[33mcommit 4fb373514219617d27f4aeda21b1343e358e62b7[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Wed Dec 11 08:31:01 2024 +0100
+
+    Lokal o'zgarishlar saqlandi
+
+[33mcommit c3484a380b686ca710ebf5fc3ff981ec67a2c79f[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Wed Dec 11 12:26:59 2024 +0500
+
+    ozgarishlar yana
+
+[33mcommit ab0c89600d747a311ff52ded53bf8f44c45d9e41[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Tue Dec 10 13:14:27 2024 +0500
+
+    yuklashda  ozgarish
+
+[33mcommit 7d4c53acf5ee5e3e6c127791f84441476b3afd8d[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Tue Dec 10 12:41:18 2024 +0500
+
+    musiqada ozgarish
+
+[33mcommit c8760c0b5856f234aef62540151ceb07a94a6b40[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Mon Dec 9 13:56:03 2024 +0500
+
+    ozgarishlar matnda yanaa
+
+[33mcommit a29b84da21217352b2285232d14750616b6c3adb[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Mon Dec 9 13:51:48 2024 +0500
+
+    ozgarishlar matnda yana
+
+[33mcommit dfe685bb19568a1a49e6f29e1cba0826d6827bbd[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Mon Dec 9 13:46:47 2024 +0500
+
+    ozgarishlar matnda
+
+[33mcommit 2ac2460e8e8da3f0e750c091645313198610f004[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Mon Dec 9 13:36:27 2024 +0500
+
+    salomlashish  yana qoshildi
+
+[33mcommit 0634846dd95c326b4e98f890d40d1efeb1a8f276[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Mon Dec 9 13:30:27 2024 +0500
+
+    salomlashish qoshildi
+
+[33mcommit 783f182ca27606c6df0d338532cac7f17792642d[m
+Author: davronovuz <davronovtatu@gmail.com>
+Date:   Mon Dec 9 13:12:26 2024 +0500
+
+    yangi loyiha
+
+[33mcommit 8d8091cadd71f3dd9a10f6a9e6fcf4542d4b3117[m
+Author: Davronov G'olibjon <86558023+davronovuz@users.noreply.github.com>
+Date:   Mon Dec 9 13:09:50 2024 +0500
+
+    Initial commit
