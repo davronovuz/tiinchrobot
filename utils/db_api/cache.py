@@ -1,6 +1,5 @@
 from .database import Database
 
-
 class MediaCacheDatabase(Database):
     def create_table_cache(self):
         """
@@ -24,20 +23,12 @@ class MediaCacheDatabase(Database):
         sql_stats = """
         CREATE TABLE IF NOT EXISTS RequestStats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            platform TEXT NOT NULL,                -- Platforma nomi (Instagram, YouTube va boshqalar)
-            request_count INTEGER DEFAULT 0,       -- So'rovlar soni
-            created_at DATE DEFAULT CURRENT_DATE   -- So'rov kuni
+            platform TEXT NOT NULL,                
+            request_count INTEGER DEFAULT 0,       
+            created_at DATE DEFAULT CURRENT_DATE   
         );
         """
         self.execute(sql_stats, commit=True)
-
-    def get_file_ids_by_url(self, url: str):
-        """
-        Berilgan URL bo'yicha barcha file_id va media_type ni qaytaradi.
-        """
-        sql = "SELECT file_id, media_type FROM MediaCache WHERE url = ?"
-        results = self.execute(sql, parameters=(url,), fetchall=True)
-        return [(row["file_id"], row["media_type"]) for row in results] if results else []
 
     # Media uchun funksiyalar
     def add_cache(self, platform: str, url: str, file_id: str):
@@ -96,7 +87,6 @@ class MediaCacheDatabase(Database):
         existing = self.execute(sql_check, parameters=(platform,), fetchone=True)
 
         if existing:
-            # Mavjud yozuvni yangilash
             sql_update = """
             UPDATE RequestStats
             SET request_count = request_count + 1
@@ -104,7 +94,6 @@ class MediaCacheDatabase(Database):
             """
             self.execute(sql_update, parameters=(platform,), commit=True)
         else:
-            # Yangi yozuv qo'shish
             sql_insert = """
             INSERT INTO RequestStats (platform, request_count)
             VALUES (?, 1)
@@ -112,9 +101,6 @@ class MediaCacheDatabase(Database):
             self.execute(sql_insert, parameters=(platform,), commit=True)
 
     def get_daily_stats(self):
-        """
-        Kunlik statistika.
-        """
         sql = """
         SELECT platform, request_count 
         FROM RequestStats 
@@ -123,9 +109,6 @@ class MediaCacheDatabase(Database):
         return self.execute(sql, fetchall=True)
 
     def get_weekly_stats(self):
-        """
-        Haftalik statistika.
-        """
         sql = """
         SELECT platform, SUM(request_count) as total_requests
         FROM RequestStats
@@ -135,9 +118,6 @@ class MediaCacheDatabase(Database):
         return self.execute(sql, fetchall=True)
 
     def get_monthly_stats(self):
-        """
-        Oylik statistika.
-        """
         sql = """
         SELECT platform, SUM(request_count) as total_requests
         FROM RequestStats
