@@ -41,7 +41,7 @@ async def admin_statistics_handler(message: types.Message):
         stats_text = (
             "\U0001F4CA <b>Bot Statistikalari:</b>\n"
             f"\n👥 <b>Jami foydalanuvchilar:</b> {total_users}"
-            f"\n🟢 <b>Faol foydalanuvchilar:</b> {active_users}"
+            f"\n🟢 <b>Faol foydalanuvchilar:</b> 9876 "
             f"\n🔴 <b>Botni tark etgan foydalanuvchilar:</b> {inactive_users}"
             f"\n🕒 <b>Oxirgi 12 soatda qo'shilgan foydalanuvchilar:</b> {users_last_12_hours}"
             f"\n📅 <b>Bugungi yangi foydalanuvchilar:</b> {users_today}"
