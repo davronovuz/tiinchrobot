@@ -16,9 +16,15 @@ services:
         condition: service_healthy
       cobalt:
         condition: service_started
+      bgutil:
+        condition: service_started
     volumes:
       - bot_temp:/tmp/tiinchbot_downloads
       - ./cookies.txt:/app/cookies.txt:ro
+    environment:
+      COBALT_API_URL: "http://cobalt:9000"
+      COOKIES_FILE: "/app/cookies.txt"
+      BGUTIL_URL: "http://bgutil:4416"
     networks:
       - botnet
 
@@ -31,15 +37,51 @@ services:
       - 8.8.4.4
       - 1.1.1.1
     environment:
+      # API sozlamalari
       API_URL: "http://cobalt:9000"
       API_PORT: "9000"
+      # YouTube uchun muhim sozlamalar
       COOKIE_PATH: "/cookies.json"
+      CUSTOM_INNERTUBE_CLIENT: "TV_SIMPLY"
+      YOUTUBE_GENERATE_PO_TOKENS: "1"
+      YOUTUBE_USE_ONESIE: "1"
+      YOUTUBE_PLAYER_ID: "9f4cc5e4"
+      # Limitlar
       DURATION_LIMIT: "3600"
       RATELIMIT_WINDOW: "60"
       RATELIMIT_MAX: "30"
       TUNNEL_LIFESPAN: "120"
+      # WARP proxy orqali YouTube IP blokirovkadan o'tish
+      HTTP_PROXY: "socks5://warp:1080"
+      HTTPS_PROXY: "socks5://warp:1080"
     volumes:
       - ./cookies.json:/cookies.json:ro
+    depends_on:
+      warp:
+        condition: service_started
+    networks:
+      - botnet
+
+  # Cloudflare WARP — YouTube datacenter IP blokirovkasini chetlab o'tish
+  warp:
+    image: cmj2002/warp-svc
+    container_name: tiinchrobot_warp
+    restart: always
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - warp_data:/var/lib/cloudflare-warp
+    networks:
+      - botnet
+
+  # YouTube PO Token generatori — yt-dlp uchun avtomatik token
+  bgutil:
+    image: brainicism/bgutil-ytdlp-pot-provider
+    container_name: tiinchrobot_bgutil
+    restart: always
+    init: true
+    environment:
+      TOKEN_TTL: "6"
     networks:
       - botnet
 
@@ -80,6 +122,7 @@ volumes:
   postgres_data:
   redis_data:
   bot_temp:
+  warp_data:
 
 networks:
   botnet:

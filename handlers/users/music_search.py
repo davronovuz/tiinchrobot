@@ -18,6 +18,7 @@ from utils.misc.download_file import world_music, main_data, top_music, new_trek
 logger = logging.getLogger(__name__)
 
 COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
+BGUTIL_URL = os.getenv("BGUTIL_URL", "http://bgutil:4416")
 
 
 # /tiktok, /top, /new komandalari
@@ -168,9 +169,24 @@ async def search_music_youtube(query):
             'extract_flat': True,
             'default_search': 'ytsearch15',
             'socket_timeout': 15,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web', 'web_safari', 'android_vr'],
+                    'player_skip': ['configs'],
+                },
+                'youtubepot-bgutilhttp': {
+                    'base_url': [BGUTIL_URL],
+                },
+            },
         }
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
+
+        try:
+            import curl_cffi  # noqa: F401
+            ydl_opts['impersonate'] = 'chrome'
+        except ImportError:
+            pass
 
         def _search():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -486,12 +502,15 @@ async def _download_and_send_ytdlp_audio(callback_query, music_info):
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
 
-        # YouTube extractor sozlamalari (2026 mart — yangilangan)
+        # YouTube extractor sozlamalari + bgutil PO token
         ydl_opts['extractor_args'] = {
             'youtube': {
                 'player_client': ['web', 'web_safari', 'android_vr'],
                 'player_skip': ['configs'],
-            }
+            },
+            'youtubepot-bgutilhttp': {
+                'base_url': [BGUTIL_URL],
+            },
         }
 
         try:

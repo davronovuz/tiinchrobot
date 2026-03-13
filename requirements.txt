@@ -39,6 +39,7 @@ redis[hiredis]==5.2.1
 # Video download
 yt-dlp>=2026.3.3
 curl_cffi>=0.14.0
+bgutil-ytdlp-pot-provider
 
 # Pyrogram (katta fayllar uchun MTProto)
 pyrogram==2.0.106
