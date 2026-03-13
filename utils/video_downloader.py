@@ -4,6 +4,8 @@ import tempfile
 import logging
 import time
 import hashlib
+import re
+import json
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -88,10 +90,17 @@ async def download_video(url: str) -> dict:
                 return result
 
         if platform == "Instagram":
-            result = await _download_instagram_api(url)
-            if result:
-                logger.info(f"[Instagram API] yuklandi")
-                return result
+            # Stories uchun maxsus handler
+            if "/stories/" in url:
+                result = await _download_instagram_stories(url)
+                if result:
+                    logger.info(f"[Instagram Stories] yuklandi")
+                    return result
+            else:
+                result = await _download_instagram_api(url)
+                if result:
+                    logger.info(f"[Instagram API] yuklandi")
+                    return result
 
         # 3. yt-dlp + bgutil PO token — universal fallback
         try:
@@ -251,105 +260,229 @@ async def _download_tiktok(url: str) -> dict:
 
 
 async def _download_instagram_api(url: str) -> dict:
-    """Instagram — tashqi API fallback zanjiri"""
-    apis = [_try_instagram_saveig, _try_instagram_fastdl]
-    for api_func in apis:
-        try:
-            result = await api_func(url)
-            if result:
-                return result
-        except Exception as e:
-            logger.error(f"[Instagram] {api_func.__name__} xatosi: {e}")
+    """Instagram — Instagram v1 API orqali yuklab olish (sessionid cookies bilan)"""
+    # URL dan shortcode olish
+    shortcode = _extract_instagram_shortcode(url)
+    if not shortcode:
+        return None
+
+    result = await _try_instagram_v1_api(shortcode, url)
+    if result:
+        return result
     return None
 
 
-async def _try_instagram_saveig(url: str) -> dict:
-    """saveig.app API"""
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.post(
-                "https://v3.saveig.app/api/ajaxSearch",
-                data={"q": url, "t": "media", "lang": "en"},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    "Origin": "https://saveig.app",
-                    "Referer": "https://saveig.app/",
-                }
-            )
-            if resp.status_code != 200:
-                return None
-
-            data = resp.json()
-            if data.get("status") != "ok":
-                return None
-
-            html_content = data.get("data", "")
-            if not html_content:
-                return None
-
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html_content, "lxml")
-
-            download_link = None
-            for a_tag in soup.find_all("a", href=True):
-                href = a_tag.get("href", "")
-                if href and ("download" in a_tag.text.lower() or ".mp4" in href or "video" in href.lower()):
-                    download_link = href
-                    break
-
-            if not download_link:
-                for link in soup.find_all("a", href=True):
-                    href = link.get("href", "")
-                    if href.startswith("http"):
-                        download_link = href
-                        break
-
-            if not download_link:
-                return None
-
-            return await _stream_download(download_link, "Instagram", url)
-    except Exception as e:
-        logger.error(f"[saveig] xatolik: {e}")
+def _extract_instagram_shortcode(url: str) -> str:
+    """Instagram URL dan shortcode olish"""
+    patterns = [
+        r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
     return None
 
 
-async def _try_instagram_fastdl(url: str) -> dict:
-    """fastdl.app API"""
+def _get_instagram_cookies_str() -> str:
+    """cookies.txt dan Instagram cookies ni string sifatida olish"""
+    cookie_str = ""
+    if not os.path.exists(COOKIES_FILE):
+        return cookie_str
+    try:
+        with open(COOKIES_FILE, "r") as f:
+            for line in f:
+                line = line.strip()
+                if ".instagram.com" in line and not line.startswith("#"):
+                    parts = line.split("\t")
+                    if len(parts) >= 7:
+                        cookie_str += f"{parts[5]}={parts[6]}; "
+    except Exception:
+        pass
+    return cookie_str
+
+
+async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
+    """Instagram v1 API — sessionid bilan media ma'lumotlarini olish"""
+    cookies_str = _get_instagram_cookies_str()
+    if not cookies_str or "sessionid" not in cookies_str:
+        logger.warning("[Instagram v1] sessionid yo'q")
+        return None
+
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.post(
-                "https://fastdl.app/api/convert",
-                json={"url": url},
+            # v1 API - media info
+            resp = await client.get(
+                f"https://i.instagram.com/api/v1/media/{shortcode}/info/",
                 headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    "Origin": "https://fastdl.app",
-                    "Referer": "https://fastdl.app/",
-                    "Content-Type": "application/json",
+                    "User-Agent": "Instagram 275.0.0.27.98 Android (33/13; 440dpi; 1080x2400; samsung; SM-A536B; a53x; exynos1280; en_US; 458229258)",
+                    "X-IG-App-ID": "567067343352427",
+                    "Cookie": cookies_str,
                 }
             )
+
             if resp.status_code != 200:
+                logger.warning(f"[Instagram v1] HTTP {resp.status_code}")
                 return None
 
             data = resp.json()
-            media_list = data.get("url", [])
-            if isinstance(media_list, str):
-                media_list = [media_list]
+            items = data.get("items", [])
+            if not items:
+                return None
 
-            video_url = None
-            for item in media_list:
-                if isinstance(item, dict):
-                    video_url = item.get("url")
-                elif isinstance(item, str):
-                    video_url = item
+            item = items[0]
+            media_type = item.get("media_type")
+
+            # Video
+            video_versions = item.get("video_versions", [])
+            if video_versions:
+                video_url = video_versions[0].get("url")
                 if video_url:
-                    break
+                    return await _stream_download(video_url, "Instagram", original_url)
 
-            if not video_url:
+            # Carousel (bir nechta rasm/video)
+            carousel = item.get("carousel_media", [])
+            if carousel:
+                for cm in carousel:
+                    vv = cm.get("video_versions", [])
+                    if vv:
+                        return await _stream_download(vv[0]["url"], "Instagram", original_url)
+                # Agar hammasi rasm bo'lsa, birinchi rasmni yuklash
+                img = carousel[0].get("image_versions2", {}).get("candidates", [])
+                if img:
+                    return await _stream_download(img[0]["url"], "Instagram", original_url)
+
+            # Rasm
+            img_versions = item.get("image_versions2", {}).get("candidates", [])
+            if img_versions:
+                return await _stream_download(img_versions[0]["url"], "Instagram", original_url)
+
+    except Exception as e:
+        logger.error(f"[Instagram v1] xatolik: {e}")
+    return None
+
+
+async def _download_instagram_stories(url: str) -> dict:
+    """Instagram Stories yuklab olish — v1 API orqali"""
+    cookies_str = _get_instagram_cookies_str()
+    if not cookies_str or "sessionid" not in cookies_str:
+        logger.warning("[Stories] sessionid yo'q")
+        return None
+
+    # URL dan username olish
+    m = re.search(r"instagram\.com/stories/([^/?]+)", url)
+    if not m:
+        return None
+    username = m.group(1)
+
+    # URL da story ID bormi?
+    story_id_match = re.search(r"instagram\.com/stories/[^/]+/(\d+)", url)
+    target_story_id = story_id_match.group(1) if story_id_match else None
+
+    ig_headers = {
+        "User-Agent": "Instagram 275.0.0.27.98 Android (33/13; 440dpi; 1080x2400; samsung; SM-A536B; a53x; exynos1280; en_US; 458229258)",
+        "X-IG-App-ID": "567067343352427",
+        "Cookie": cookies_str,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            # 1. Username dan user_id olish
+            resp = await client.get(
+                f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
+                headers=ig_headers,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"[Stories] user info HTTP {resp.status_code}")
                 return None
 
-            return await _stream_download(video_url, "Instagram", url)
+            user_data = resp.json()
+            user_id = user_data.get("data", {}).get("user", {}).get("id")
+            if not user_id:
+                return None
+
+            # 2. Stories olish
+            resp2 = await client.get(
+                f"https://i.instagram.com/api/v1/feed/reels_media/?reel_ids={user_id}",
+                headers=ig_headers,
+            )
+            if resp2.status_code != 200:
+                logger.warning(f"[Stories] reels_media HTTP {resp2.status_code}")
+                return None
+
+            stories_data = resp2.json()
+            reels = stories_data.get("reels", {})
+            reel = reels.get(str(user_id), {})
+            story_items = reel.get("items", [])
+
+            if not story_items:
+                logger.info(f"[Stories] {username} da stories yo'q")
+                return None
+
+            # Agar aniq story_id berilgan bo'lsa, shuni topamiz
+            if target_story_id:
+                for item in story_items:
+                    if str(item.get("pk")) == target_story_id or str(item.get("id", "")).startswith(target_story_id):
+                        return await _download_story_item(item, url)
+                # Topilmasa birinchisini olish
+                logger.info(f"[Stories] story_id {target_story_id} topilmadi, oxirgi story yuklanadi")
+
+            # Eng oxirgi story ni yuklash
+            item = story_items[-1]
+            return await _download_story_item(item, url)
+
     except Exception as e:
-        logger.error(f"[fastdl] xatolik: {e}")
+        logger.error(f"[Stories] xatolik: {e}", exc_info=True)
+    return None
+
+
+async def _download_story_item(item: dict, original_url: str) -> dict:
+    """Bitta story itemni yuklab olish"""
+    media_type = item.get("media_type")
+
+    # Video story
+    video_versions = item.get("video_versions", [])
+    if video_versions:
+        video_url = video_versions[0].get("url")
+        if video_url:
+            return await _stream_download(video_url, "Instagram", original_url)
+
+    # Rasm story
+    img_versions = item.get("image_versions2", {}).get("candidates", [])
+    if img_versions:
+        img_url = img_versions[0].get("url")
+        if img_url:
+            # Rasmni yuklab olish
+            file_path = os.path.join(TEMP_DIR, f"story_{hash(original_url) & 0xFFFFFFFF}.jpg")
+            try:
+                async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                    async with client.stream("GET", img_url, headers={
+                        "User-Agent": "Mozilla/5.0"
+                    }) as stream:
+                        if stream.status_code != 200:
+                            return None
+                        with open(file_path, "wb") as f:
+                            async for chunk in stream.aiter_bytes(chunk_size=65536):
+                                f.write(chunk)
+
+                filesize = os.path.getsize(file_path)
+                if filesize < 500:
+                    os.unlink(file_path)
+                    return None
+
+                return {
+                    'file_path': file_path,
+                    'title': 'Instagram Story',
+                    'duration': 0,
+                    'filesize': filesize,
+                    'thumbnail': '',
+                    'platform': 'Instagram',
+                    'width': 0,
+                    'height': 0,
+                    'is_photo': True,
+                }
+            except Exception as e:
+                logger.error(f"[Story img] xatolik: {e}")
     return None
 
 

@@ -201,7 +201,10 @@ async def _download_and_send(
             return
 
         file_path = result['file_path']
-        await _send_result(downloading_message, result, url, platform)
+        is_audio = result.get('is_audio', False)
+        is_photo = result.get('is_photo', False)
+        await _send_result(downloading_message, result, url, platform,
+                           is_audio=is_audio)
 
     except Exception as e:
         logger.error(f"Video yuklab olish xatosi: {e}", exc_info=True)
@@ -218,13 +221,14 @@ async def _send_result(
     status_message: types.Message, result: dict, url: str,
     platform: str, is_audio: bool = False
 ):
-    """Natijani foydalanuvchiga yuborish (video yoki audio)"""
+    """Natijani foydalanuvchiga yuborish (video, audio yoki rasm)"""
     file_path = result['file_path']
     file_size = result['filesize']
     title = result.get('title', 'Video')
     duration = result.get('duration', 0)
     width = result.get('width', 0)
     height = result.get('height', 0)
+    is_photo = result.get('is_photo', False)
     chat_id = status_message.chat.id
 
     caption = f"✨ {hd.bold('@tinchrobot')} – Tinchlikni xohlovchilar uchun!"
@@ -234,6 +238,23 @@ async def _send_result(
             f"⛔ Fayl hajmi juda katta (>{MAX_FILE_SIZE // (1024*1024*1024)}GB). "
             f"Telegram limiti tufayli yuborib bo'lmaydi."
         )
+        return
+
+    # Rasm yuborish
+    if is_photo:
+        input_file = InputFile(file_path)
+        sent_msg = await bot.send_photo(
+            chat_id=chat_id,
+            photo=input_file,
+            caption=caption,
+            parse_mode="HTML",
+        )
+        if sent_msg.photo:
+            await cache_db.add_cache(platform, url, sent_msg.photo[-1].file_id, "photo")
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
         return
 
     if is_audio:
