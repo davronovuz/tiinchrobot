@@ -2,187 +2,161 @@ from .database import Database
 from datetime import datetime, timedelta
 
 
-class UserDatabase(Database):
-    def create_table_users(self):
-        # Foydalanuvchilar jadvali
+class UserDatabase:
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def create_table_users(self):
         sql_users = """
         CREATE TABLE IF NOT EXISTS Users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             telegram_id BIGINT NOT NULL UNIQUE,
             username VARCHAR(255) NULL,
-            last_active DATETIME NULL,
+            last_active TIMESTAMP NULL,
             is_active BOOLEAN DEFAULT TRUE,
-            is_blocked BOOLEAN DEFAULT FALSE,  -- Yangi ustun bloklangan foydalanuvchilar uchun
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            is_blocked BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         """
-        self.execute(sql_users, commit=True)
+        await self.db.execute(sql_users)
 
-        # Adminlar jadvali
         sql_admins = """
         CREATE TABLE IF NOT EXISTS Admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES Users(id) ON DELETE CASCADE,
             name VARCHAR(255) NOT NULL,
             is_super_admin BOOLEAN DEFAULT FALSE,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         """
-        self.execute(sql_admins, commit=True)
+        await self.db.execute(sql_admins)
 
     # Foydalanuvchilar bilan ishlash
-    def user_exists(self, telegram_id: int):
-        sql = "SELECT 1 FROM Users WHERE telegram_id = ?"
-        result = self.execute(sql, parameters=(telegram_id,), fetchone=True)
+    async def user_exists(self, telegram_id: int):
+        sql = "SELECT 1 FROM Users WHERE telegram_id = $1"
+        result = await self.db.execute(sql, telegram_id, fetchrow=True)
         return result is not None
 
-    def add_user(self, telegram_id: int, username: str, created_at=None):
-        if not self.user_exists(telegram_id):
+    async def add_user(self, telegram_id: int, username: str, created_at=None):
+        if not await self.user_exists(telegram_id):
+            if created_at is None:
+                created_at = datetime.now()
             sql = """
             INSERT INTO Users (telegram_id, username, created_at)
-            VALUES (?, ?, ?)
+            VALUES ($1, $2, $3)
             """
-            if created_at is None:
-                created_at = datetime.now().isoformat()
-            self.execute(sql, parameters=(telegram_id, username, created_at), commit=True)
-        else:
-            print(f"User with telegram_id {telegram_id} already exists.")
+            await self.db.execute(sql, telegram_id, username, created_at)
 
-    def select_all_users(self):
+    async def select_all_users(self):
         sql = "SELECT * FROM Users"
-        return self.execute(sql, fetchall=True)
+        return await self.db.execute(sql, fetch=True)
 
-    def select_user(self, **kwargs):
-        sql = "SELECT * FROM Users WHERE "
-        sql, parameters = self.format_args(sql, kwargs)
-        return self.execute(sql, parameters=parameters, fetchone=True)
+    async def select_user(self, **kwargs):
+        conditions = []
+        values = []
+        for i, (key, val) in enumerate(kwargs.items(), 1):
+            conditions.append(f"{key} = ${i}")
+            values.append(val)
+        sql = f"SELECT * FROM Users WHERE {' AND '.join(conditions)}"
+        return await self.db.execute(sql, *values, fetchrow=True)
 
-    def count_users(self):
-        return self.execute("SELECT COUNT(*) FROM Users;", fetchone=True)[0]
+    async def count_users(self):
+        return await self.db.execute("SELECT COUNT(*) FROM Users;", fetchval=True)
 
-    def delete_users(self):
-        self.execute("DELETE FROM Users WHERE TRUE", commit=True)
+    async def delete_users(self):
+        await self.db.execute("DELETE FROM Users")
 
-    def update_user_last_active(self, telegram_id: int):
-        sql = """
-        UPDATE Users
-        SET last_active = ?
-        WHERE telegram_id = ?
-        """
-        last_active = datetime.now().isoformat()
-        self.execute(sql, parameters=(last_active, telegram_id), commit=True)
+    async def update_user_last_active(self, telegram_id: int):
+        sql = "UPDATE Users SET last_active = $1 WHERE telegram_id = $2"
+        await self.db.execute(sql, datetime.now(), telegram_id)
 
-    def deactivate_user(self, telegram_id: int):
-        sql = """
-        UPDATE Users
-        SET is_active = FALSE
-        WHERE telegram_id = ?
-        """
-        self.execute(sql, parameters=(telegram_id,), commit=True)
+    async def deactivate_user(self, telegram_id: int):
+        sql = "UPDATE Users SET is_active = FALSE WHERE telegram_id = $1"
+        await self.db.execute(sql, telegram_id)
 
-    def activate_user(self, telegram_id: int):
-        sql = """
-        UPDATE Users
-        SET is_active = TRUE
-        WHERE telegram_id = ?
-        """
-        self.execute(sql, parameters=(telegram_id,), commit=True)
+    async def activate_user(self, telegram_id: int):
+        sql = "UPDATE Users SET is_active = TRUE WHERE telegram_id = $1"
+        await self.db.execute(sql, telegram_id)
 
-    def mark_user_as_blocked(self, telegram_id: int):
-        sql = """
-        UPDATE Users
-        SET is_blocked = TRUE, is_active = FALSE
-        WHERE telegram_id = ?
-        """
-        self.execute(sql, parameters=(telegram_id,), commit=True)
+    async def mark_user_as_blocked(self, telegram_id: int):
+        sql = "UPDATE Users SET is_blocked = TRUE, is_active = FALSE WHERE telegram_id = $1"
+        await self.db.execute(sql, telegram_id)
 
-    def get_active_users(self):
+    async def get_active_users(self):
         sql = "SELECT * FROM Users WHERE is_active = TRUE"
-        return self.execute(sql, fetchall=True)
+        return await self.db.execute(sql, fetch=True)
 
-    def get_inactive_users(self):
+    async def get_inactive_users(self):
         sql = "SELECT * FROM Users WHERE is_active = FALSE"
-        return self.execute(sql, fetchall=True)
+        return await self.db.execute(sql, fetch=True)
 
-    def get_blocked_users(self):
+    async def get_blocked_users(self):
         sql = "SELECT * FROM Users WHERE is_blocked = TRUE"
-        return self.execute(sql, fetchall=True)
+        return await self.db.execute(sql, fetch=True)
 
     # Statistikalar
-    def count_active_users(self):
-        sql = "SELECT COUNT(*) FROM Users WHERE is_active = TRUE;"
-        return self.execute(sql, fetchone=True)[0]
+    async def count_active_users(self):
+        return await self.db.execute(
+            "SELECT COUNT(*) FROM Users WHERE is_active = TRUE;", fetchval=True
+        )
 
-    def count_blocked_users(self):
-        sql = "SELECT COUNT(*) FROM Users WHERE is_blocked = TRUE;"
-        return self.execute(sql, fetchone=True)[0]
+    async def count_blocked_users(self):
+        return await self.db.execute(
+            "SELECT COUNT(*) FROM Users WHERE is_blocked = TRUE;", fetchval=True
+        )
 
-    def count_users_last_12_hours(self):
-        time_threshold = (datetime.now() - timedelta(hours=12)).isoformat()
-        sql = "SELECT COUNT(*) FROM Users WHERE created_at >= ?;"
-        return self.execute(sql, parameters=(time_threshold,), fetchone=True)[0]
+    async def count_users_last_12_hours(self):
+        time_threshold = datetime.now() - timedelta(hours=12)
+        sql = "SELECT COUNT(*) FROM Users WHERE created_at >= $1;"
+        return await self.db.execute(sql, time_threshold, fetchval=True)
 
-    def count_users_today(self):
-        today = datetime.now().date().isoformat()
-        sql = "SELECT COUNT(*) FROM Users WHERE DATE(created_at) = ?;"
-        return self.execute(sql, parameters=(today,), fetchone=True)[0]
+    async def count_users_today(self):
+        today = datetime.now().date()
+        sql = "SELECT COUNT(*) FROM Users WHERE DATE(created_at) = $1;"
+        return await self.db.execute(sql, today, fetchval=True)
 
-    def count_users_this_week(self):
-        start_of_week = (datetime.now() - timedelta(days=datetime.now().weekday())).date().isoformat()
-        sql = "SELECT COUNT(*) FROM Users WHERE DATE(created_at) >= ?;"
-        return self.execute(sql, parameters=(start_of_week,), fetchone=True)[0]
+    async def count_users_this_week(self):
+        start_of_week = (datetime.now() - timedelta(days=datetime.now().weekday())).date()
+        sql = "SELECT COUNT(*) FROM Users WHERE DATE(created_at) >= $1;"
+        return await self.db.execute(sql, start_of_week, fetchval=True)
 
-    def count_users_this_month(self):
-        start_of_month = datetime.now().replace(day=1).date().isoformat()
-        sql = "SELECT COUNT(*) FROM Users WHERE DATE(created_at) >= ?;"
-        return self.execute(sql, parameters=(start_of_month,), fetchone=True)[0]
+    async def count_users_this_month(self):
+        start_of_month = datetime.now().replace(day=1).date()
+        sql = "SELECT COUNT(*) FROM Users WHERE DATE(created_at) >= $1;"
+        return await self.db.execute(sql, start_of_month, fetchval=True)
 
     # Adminlar bilan ishlash
-    def add_admin(self, user_id: int, name: str, is_super_admin: bool = False):
-        if not self.check_if_admin(user_id):
-            sql = """
-            INSERT INTO Admins (user_id, name, is_super_admin)
-            VALUES (?, ?, ?)
-            """
-            self.execute(sql, parameters=(user_id, name, is_super_admin), commit=True)
-        else:
-            print(f"User with user_id {user_id} is already an admin.")
+    async def add_admin(self, user_id: int, name: str, is_super_admin: bool = False):
+        if not await self.check_if_admin(user_id):
+            sql = "INSERT INTO Admins (user_id, name, is_super_admin) VALUES ($1, $2, $3)"
+            await self.db.execute(sql, user_id, name, is_super_admin)
 
-    def remove_admin(self, user_id: int):
-        sql = "DELETE FROM Admins WHERE user_id = ?"
-        self.execute(sql, parameters=(user_id,), commit=True)
+    async def remove_admin(self, user_id: int):
+        sql = "DELETE FROM Admins WHERE user_id = $1"
+        await self.db.execute(sql, user_id)
 
-    def get_all_admins(self):
+    async def get_all_admins(self):
         sql = """
         SELECT Admins.user_id, Users.telegram_id, Admins.name, Admins.is_super_admin
         FROM Admins
         JOIN Users ON Admins.user_id = Users.id
         """
-        result = self.execute(sql, fetchall=True)
-
-        if not result:
-            return []
-
+        rows = await self.db.execute(sql, fetch=True)
         admins = []
-        for row in result:
+        for row in rows:
             admins.append({
-                "user_id": row[0],          # Users jadvalidagi id (user_id)
-                "telegram_id": row[1],      # Telegram ID
-                "name": row[2],             # Adminning ismi
-                "is_super_admin": row[3]    # Super admin yoki yo'q
+                "user_id": row["user_id"],
+                "telegram_id": row["telegram_id"],
+                "name": row["name"],
+                "is_super_admin": row["is_super_admin"]
             })
         return admins
 
-    def check_if_admin(self, user_id: int) -> bool:
-        sql = "SELECT 1 FROM Admins WHERE user_id = ?"
-        result = self.execute(sql, parameters=(user_id,), fetchone=True)
+    async def check_if_admin(self, user_id: int) -> bool:
+        sql = "SELECT 1 FROM Admins WHERE user_id = $1"
+        result = await self.db.execute(sql, user_id, fetchrow=True)
         return result is not None
 
-    def update_admin_status(self, user_id: int, is_super_admin: bool):
-        sql = """
-        UPDATE Admins
-        SET is_super_admin = ?
-        WHERE user_id = ?
-        """
-        self.execute(sql, parameters=(is_super_admin, user_id), commit=True)
+    async def update_admin_status(self, user_id: int, is_super_admin: bool):
+        sql = "UPDATE Admins SET is_super_admin = $1 WHERE user_id = $2"
+        await self.db.execute(sql, is_super_admin, user_id)

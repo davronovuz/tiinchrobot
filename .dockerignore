@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+.env
+*.db
+data/*.db
+data/*.session
+.git
+.gitignore
+.idea
+venv
+.venv
+*.md
+xqx

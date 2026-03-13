@@ -1,46 +1,29 @@
-# database.py: Umumiy ma'lumotlar bazasi bilan bog'lanish va "execute" funksiyasi
-import sqlite3
-from datetime import datetime
+import asyncpg
+import logging
 
-def logger(statement):
-    print(f"""
-_____________________________________________________        
-Executing: 
-{statement}
-_____________________________________________________
-""")
+logger = logging.getLogger(__name__)
+
 
 class Database:
-    def __init__(self, path_to_db="main.db"):
-        self.path_to_db = path_to_db
+    def __init__(self):
+        self.pool = None
 
-    @property
-    def connection(self):
-        return sqlite3.connect(self.path_to_db)
+    async def create_pool(self, dsn: str):
+        self.pool = await asyncpg.create_pool(dsn=dsn, min_size=5, max_size=20)
+        logger.info("PostgreSQL pool yaratildi")
 
-    def execute(self, sql: str, parameters: tuple = None, fetchone=False, fetchall=False, commit=False):
-        if not parameters:
-            parameters = ()
-        connection = self.connection
-        connection.set_trace_callback(logger)
-        cursor = connection.cursor()
-        data = None
-        try:
-            cursor.execute(sql, parameters)
-            if commit:
-                connection.commit()
-            if fetchall:
-                data = cursor.fetchall()
-            if fetchone:
-                data = cursor.fetchone()
-        except sqlite3.Error as e:
-            print(f"SQLite error: {e}")
-            connection.rollback()
-        finally:
-            connection.close()
-        return data
+    async def execute(self, sql: str, *args, fetch=False, fetchval=False, fetchrow=False):
+        async with self.pool.acquire() as conn:
+            if fetch:
+                return await conn.fetch(sql, *args)
+            elif fetchval:
+                return await conn.fetchval(sql, *args)
+            elif fetchrow:
+                return await conn.fetchrow(sql, *args)
+            else:
+                return await conn.execute(sql, *args)
 
-    @staticmethod
-    def format_args(sql, parameters: dict):
-        sql += " AND ".join([f"{item} = ?" for item in parameters])
-        return sql, tuple(parameters.values())
+    async def close(self):
+        if self.pool:
+            await self.pool.close()
+            logger.info("PostgreSQL pool yopildi")

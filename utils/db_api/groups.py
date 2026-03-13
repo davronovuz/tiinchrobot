@@ -1,46 +1,37 @@
-# groups.py: Guruhlar bilan bog'liq operatsiyalar
 from .database import Database
 from datetime import datetime
 
-class GroupDatabase(Database):
-    def create_table_groups(self):
+
+class GroupDatabase:
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def create_table_groups(self):
         sql = """
         CREATE TABLE IF NOT EXISTS Groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             group_id BIGINT NOT NULL UNIQUE,
             group_name VARCHAR(255) NOT NULL,
             member_count INTEGER NOT NULL DEFAULT 0,
-            joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            last_activity DATETIME NULL
+            joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_activity TIMESTAMP NULL
         );
         """
-        self.execute(sql, commit=True)
+        await self.db.execute(sql)
 
-    def add_group(self, group_id: int, group_name: str, member_count: int):
+    async def add_group(self, group_id: int, group_name: str, member_count: int):
         sql = """
         INSERT INTO Groups(group_id, group_name, member_count, joined_at)
-        VALUES (?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4)
         """
-        joined_at = datetime.now().isoformat()
-        self.execute(sql, parameters=(group_id, group_name, member_count, joined_at), commit=True)
+        await self.db.execute(sql, group_id, group_name, member_count, datetime.now())
 
-    def update_group_member_count(self, group_id: int, member_count: int):
-        sql = """
-        UPDATE Groups
-        SET member_count = ?, last_activity = ?
-        WHERE group_id = ?
-        """
-        last_activity = datetime.now().isoformat()
-        self.execute(sql, parameters=(member_count, last_activity, group_id), commit=True)
+    async def update_group_member_count(self, group_id: int, member_count: int):
+        sql = "UPDATE Groups SET member_count = $1, last_activity = $2 WHERE group_id = $3"
+        await self.db.execute(sql, member_count, datetime.now(), group_id)
 
-    def get_all_groups(self):
-        sql = """
-        SELECT * FROM Groups
-        """
-        return self.execute(sql, fetchall=True)
+    async def get_all_groups(self):
+        return await self.db.execute("SELECT * FROM Groups", fetch=True)
 
-    def delete_group(self, group_id: int):
-        sql = """
-        DELETE FROM Groups WHERE group_id = ?
-        """
-        self.execute(sql, parameters=(group_id,), commit=True)
+    async def delete_group(self, group_id: int):
+        await self.db.execute("DELETE FROM Groups WHERE group_id = $1", group_id)

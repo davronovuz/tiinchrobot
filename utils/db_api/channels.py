@@ -1,55 +1,50 @@
 from .database import Database
 
-class ChannelDatabase(Database):
-    def create_table_channels(self):
-        # Kanallar jadvali
-        sql_channels = """
+
+class ChannelDatabase:
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def create_table_channels(self):
+        sql = """
         CREATE TABLE IF NOT EXISTS Channels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             channel_id BIGINT UNIQUE,
             title VARCHAR(255),
             invite_link VARCHAR(255) NOT NULL
         );
         """
-        self.execute(sql_channels, commit=True)
+        await self.db.execute(sql)
 
-    # Kanallar bilan ishlash
-    def add_channel(self, channel_id: int, title: str, invite_link: str):
-        sql = """
-        INSERT INTO Channels (channel_id, title, invite_link)
-        VALUES (?, ?, ?)
-        """
-        self.execute(sql, parameters=(channel_id, title, invite_link), commit=True)
+    async def add_channel(self, channel_id: int, title: str, invite_link: str):
+        sql = "INSERT INTO Channels (channel_id, title, invite_link) VALUES ($1, $2, $3)"
+        await self.db.execute(sql, channel_id, title, invite_link)
 
-    def remove_channel(self, channel_id: int):
-        sql = "DELETE FROM Channels WHERE channel_id = ?"
-        self.execute(sql, parameters=(channel_id,), commit=True)
+    async def remove_channel(self, channel_id: int):
+        await self.db.execute("DELETE FROM Channels WHERE channel_id = $1", channel_id)
 
-    def get_all_channels(self):
-        sql = "SELECT * FROM Channels"
-        return self.execute(sql, fetchall=True)
+    async def get_all_channels(self):
+        return await self.db.execute("SELECT * FROM Channels", fetch=True)
 
-    def get_channel_by_id(self, channel_id: int):
-        sql = "SELECT * FROM Channels WHERE channel_id = ?"
-        return self.execute(sql, parameters=(channel_id,), fetchone=True)
+    async def get_channel_by_id(self, channel_id: int):
+        return await self.db.execute(
+            "SELECT * FROM Channels WHERE channel_id = $1", channel_id, fetchrow=True
+        )
 
-    def get_channel_by_invite_link(self, invite_link: str):
-        sql = "SELECT * FROM Channels WHERE invite_link = ?"
-        return self.execute(sql, parameters=(invite_link,), fetchone=True)
+    async def get_channel_by_invite_link(self, invite_link: str):
+        return await self.db.execute(
+            "SELECT * FROM Channels WHERE invite_link = $1", invite_link, fetchrow=True
+        )
 
-    def update_channel_invite_link(self, channel_id: int, new_invite_link: str):
-        sql = """
-        UPDATE Channels
-        SET invite_link = ?
-        WHERE channel_id = ?
-        """
-        self.execute(sql, parameters=(new_invite_link, channel_id), commit=True)
+    async def update_channel_invite_link(self, channel_id: int, new_invite_link: str):
+        sql = "UPDATE Channels SET invite_link = $1 WHERE channel_id = $2"
+        await self.db.execute(sql, new_invite_link, channel_id)
 
-    def channel_exists(self, channel_id: int) -> bool:
-        sql = "SELECT 1 FROM Channels WHERE channel_id = ?"
-        result = self.execute(sql, parameters=(channel_id,), fetchone=True)
+    async def channel_exists(self, channel_id: int) -> bool:
+        result = await self.db.execute(
+            "SELECT 1 FROM Channels WHERE channel_id = $1", channel_id, fetchrow=True
+        )
         return result is not None
 
-    def count_channels(self):
-        sql = "SELECT COUNT(*) FROM Channels;"
-        return self.execute(sql, fetchone=True)[0]
+    async def count_channels(self):
+        return await self.db.execute("SELECT COUNT(*) FROM Channels;", fetchval=True)

@@ -29,3 +29,16 @@ soupsieve==2.6
 typing_extensions==4.12.2
 urllib3==2.2.3
 yarl==1.17.1
+
+# PostgreSQL
+asyncpg==0.30.0
+
+# Redis
+redis[hiredis]==5.2.1
+
+# Video download
+yt-dlp==2024.12.23
+
+# Pyrogram (katta fayllar uchun MTProto)
+pyrogram==2.0.106
+tgcrypto==1.2.5

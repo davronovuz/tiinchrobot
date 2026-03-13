@@ -1,127 +1,134 @@
 from .database import Database
+import redis.asyncio as aioredis
+import logging
 
-class MediaCacheDatabase(Database):
-    def create_table_cache(self):
-        """
-        Media fayllar uchun jadvalni yaratish.
-        """
+logger = logging.getLogger(__name__)
+
+
+class MediaCacheDatabase:
+    def __init__(self, db: Database, redis_client: aioredis.Redis = None):
+        self.db = db
+        self.redis = redis_client
+
+    async def create_table_cache(self):
         sql_cache = """
         CREATE TABLE IF NOT EXISTS MediaCache (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            platform TEXT NOT NULL,                -- Platforma nomi
-            url TEXT NOT NULL UNIQUE,              -- Media URL
-            file_id TEXT NOT NULL UNIQUE,          -- Telegram file_id
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP -- Yaratilgan vaqt
+            id SERIAL PRIMARY KEY,
+            platform TEXT NOT NULL,
+            url TEXT NOT NULL UNIQUE,
+            file_id TEXT NOT NULL,
+            media_type TEXT DEFAULT 'document',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """
-        self.execute(sql_cache, commit=True)
+        await self.db.execute(sql_cache)
 
-    def create_table_request_stats(self):
-        """
-        Platformalar bo'yicha statistikani kuzatish uchun jadvalni yaratish.
-        """
+    async def create_table_request_stats(self):
         sql_stats = """
         CREATE TABLE IF NOT EXISTS RequestStats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            platform TEXT NOT NULL,                
-            request_count INTEGER DEFAULT 0,       
-            created_at DATE DEFAULT CURRENT_DATE   
+            id SERIAL PRIMARY KEY,
+            platform TEXT NOT NULL,
+            request_count INTEGER DEFAULT 0,
+            created_at DATE DEFAULT CURRENT_DATE
         );
         """
-        self.execute(sql_stats, commit=True)
+        await self.db.execute(sql_stats)
 
-    # Media uchun funksiyalar
-    def add_cache(self, platform: str, url: str, file_id: str):
-        """
-        Media faylni jadvalga qo'shish.
-        """
+    # Media cache funksiyalari
+    async def add_cache(self, platform: str, url: str, file_id: str, media_type: str = "document"):
         sql = """
-        INSERT OR IGNORE INTO MediaCache (platform, url, file_id)
-        VALUES (?, ?, ?)
+        INSERT INTO MediaCache (platform, url, file_id, media_type)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (url) DO NOTHING
         """
-        self.execute(sql, parameters=(platform, url, file_id), commit=True)
+        await self.db.execute(sql, platform, url, file_id, media_type)
+        # Redis ga ham yozamiz
+        if self.redis:
+            await self.redis.hset(f"cache:{url}", mapping={
+                "file_id": file_id,
+                "media_type": media_type
+            })
+            await self.redis.expire(f"cache:{url}", 86400 * 30)  # 30 kun
 
-    def get_file_id_by_url(self, url: str):
-        """
-        URL orqali file_id ni olish.
-        """
-        sql = "SELECT file_id FROM MediaCache WHERE url = ?"
-        result = self.execute(sql, parameters=(url,), fetchone=True)
-        return result[0] if result else None
+    async def get_file_id_by_url(self, url: str):
+        # Avval Redis dan qidiramiz (tez)
+        if self.redis:
+            cached = await self.redis.hgetall(f"cache:{url}")
+            if cached:
+                return {
+                    "file_id": cached.get("file_id", ""),
+                    "media_type": cached.get("media_type", "document")
+                }
 
-    def get_all_cache(self):
-        """
-        Barcha media kechalarni olish.
-        """
-        sql = "SELECT * FROM MediaCache"
-        return self.execute(sql, fetchall=True)
+        # Redis da bo'lmasa PostgreSQL dan
+        sql = "SELECT file_id, media_type FROM MediaCache WHERE url = $1"
+        result = await self.db.execute(sql, url, fetchrow=True)
+        if result:
+            data = {"file_id": result["file_id"], "media_type": result["media_type"]}
+            # Redis ga ham yozamiz
+            if self.redis:
+                await self.redis.hset(f"cache:{url}", mapping=data)
+                await self.redis.expire(f"cache:{url}", 86400 * 30)
+            return data
+        return None
 
-    def delete_cache_by_url(self, url: str):
-        """
-        URL orqali kechani o'chirish.
-        """
-        sql = "DELETE FROM MediaCache WHERE url = ?"
-        self.execute(sql, parameters=(url,), commit=True)
+    async def get_all_cache(self):
+        return await self.db.execute("SELECT * FROM MediaCache", fetch=True)
 
-    def clear_all_cache(self):
-        """
-        Barcha kechalarni tozalash.
-        """
-        sql = "DELETE FROM MediaCache"
-        self.execute(sql, commit=True)
+    async def delete_cache_by_url(self, url: str):
+        await self.db.execute("DELETE FROM MediaCache WHERE url = $1", url)
+        if self.redis:
+            await self.redis.delete(f"cache:{url}")
 
-    def cache_exists(self, url: str) -> bool:
-        """
-        URL mavjudligini tekshirish.
-        """
-        sql = "SELECT 1 FROM MediaCache WHERE url = ?"
-        result = self.execute(sql, parameters=(url,), fetchone=True)
+    async def clear_all_cache(self):
+        await self.db.execute("DELETE FROM MediaCache")
+        if self.redis:
+            async for key in self.redis.scan_iter("cache:*"):
+                await self.redis.delete(key)
+
+    async def cache_exists(self, url: str) -> bool:
+        if self.redis:
+            exists = await self.redis.exists(f"cache:{url}")
+            if exists:
+                return True
+        result = await self.db.execute(
+            "SELECT 1 FROM MediaCache WHERE url = $1", url, fetchrow=True
+        )
         return result is not None
 
-    # Statistikalar uchun funksiyalar
-    def increment_request_count(self, platform: str):
-        """
-        Platforma bo'yicha so'rov sonini oshirish yoki yangi yozuv qo'shish.
-        """
-        sql_check = "SELECT id FROM RequestStats WHERE platform = ? AND created_at = CURRENT_DATE"
-        existing = self.execute(sql_check, parameters=(platform,), fetchone=True)
+    # Statistikalar
+    async def increment_request_count(self, platform: str):
+        sql_check = "SELECT id FROM RequestStats WHERE platform = $1 AND created_at = CURRENT_DATE"
+        existing = await self.db.execute(sql_check, platform, fetchrow=True)
 
         if existing:
             sql_update = """
-            UPDATE RequestStats
-            SET request_count = request_count + 1
-            WHERE platform = ? AND created_at = CURRENT_DATE
+            UPDATE RequestStats SET request_count = request_count + 1
+            WHERE platform = $1 AND created_at = CURRENT_DATE
             """
-            self.execute(sql_update, parameters=(platform,), commit=True)
+            await self.db.execute(sql_update, platform)
         else:
-            sql_insert = """
-            INSERT INTO RequestStats (platform, request_count)
-            VALUES (?, 1)
-            """
-            self.execute(sql_insert, parameters=(platform,), commit=True)
+            sql_insert = "INSERT INTO RequestStats (platform, request_count) VALUES ($1, 1)"
+            await self.db.execute(sql_insert, platform)
 
-    def get_daily_stats(self):
-        sql = """
-        SELECT platform, request_count 
-        FROM RequestStats 
-        WHERE created_at = CURRENT_DATE
-        """
-        return self.execute(sql, fetchall=True)
+    async def get_daily_stats(self):
+        sql = "SELECT platform, request_count FROM RequestStats WHERE created_at = CURRENT_DATE"
+        return await self.db.execute(sql, fetch=True)
 
-    def get_weekly_stats(self):
+    async def get_weekly_stats(self):
         sql = """
         SELECT platform, SUM(request_count) as total_requests
         FROM RequestStats
-        WHERE created_at >= DATE('now', '-6 days')
+        WHERE created_at >= CURRENT_DATE - INTERVAL '6 days'
         GROUP BY platform
         """
-        return self.execute(sql, fetchall=True)
+        return await self.db.execute(sql, fetch=True)
 
-    def get_monthly_stats(self):
+    async def get_monthly_stats(self):
         sql = """
         SELECT platform, SUM(request_count) as total_requests
         FROM RequestStats
-        WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+        WHERE TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(CURRENT_DATE, 'YYYY-MM')
         GROUP BY platform
         """
-        return self.execute(sql, fetchall=True)
+        return await self.db.execute(sql, fetch=True)

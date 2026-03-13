@@ -23,25 +23,20 @@ class SubscriptionMiddleware(BaseMiddleware):
         result = "⚠️ Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:\n"
         final_status = True
 
-        # Bazadan barcha kanallarni olish
-        channels = channel_db.get_all_channels()
+        channels = await channel_db.get_all_channels()
 
         for channel in channels:
-            channel_id = channel[1]  # channel_id ni olish
-            title = channel[2]       # title ni olish
-            invite_link = channel[3] # invite_link ni olish
+            channel_id = channel["channel_id"]
+            title = channel["title"]
+            invite_link = channel["invite_link"]
 
-            # Foydalanuvchi kanalga obuna bo'lganligini tekshirish
             status = await subscription.check(user_id=user, channel=channel_id)
-
             final_status = final_status and status
 
-            # Agar foydalanuvchi obuna bo'lmagan bo'lsa, invite_link orqali xabar qilish
             if not status:
                 result += f"👉 <a href='{invite_link}'>{title}</a>\n"
 
         if not final_status:
-            # "Obunani tekshirish" tugmasini yaratamiz
             check_button = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_subs")]
@@ -64,20 +59,18 @@ class SubscriptionMiddleware(BaseMiddleware):
             raise CancelHandler()
 
 
-
-
 @dp.callback_query_handler(text="check_subs")
 async def check_subscriptions(call: types.CallbackQuery):
     user = call.from_user.id
     result = "⚠️ Hali ham quyidagi kanallarga obuna bo'lmagansiz:\n"
     final_status = True
 
-    channels = channel_db.get_all_channels()
+    channels = await channel_db.get_all_channels()
 
     for channel in channels:
-        channel_id = channel[1]
-        title = channel[2]
-        invite_link = channel[3]
+        channel_id = channel["channel_id"]
+        title = channel["title"]
+        invite_link = channel["invite_link"]
 
         status = await subscription.check(user_id=user, channel=channel_id)
         final_status = final_status and status
@@ -88,7 +81,6 @@ async def check_subscriptions(call: types.CallbackQuery):
     if final_status:
         await call.message.delete()
         await call.message.answer("✅ Rahmat! Siz barcha kanallarga obuna bo'lgansiz. Endi botdan foydalanishingiz mumkin.")
-        # Agar kerak bo'lsa, foydalanuvchini asosiy menyuga yoki boshqa joyga yo'naltirishingiz mumkin
     else:
         await call.answer("❌ Siz hali ham barcha kanallarga obuna bo'lmadingiz.", show_alert=True)
         await call.message.edit_text(

@@ -132,3 +132,11 @@ dmypy.json
 # Database files
 *.db
 data/*.db
+data/*.session
+
+# Docker
+postgres_data/
+redis_data/
+
+# Temp downloads
+/tmp/tiinchbot_*

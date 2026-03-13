@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: tiinchrobot
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - bot_temp:/tmp/tiinchbot_downloads
+    networks:
+      - botnet
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tiinchrobot_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-tiinchrobot}
+      POSTGRES_USER: ${DB_USER:-botuser}
+      POSTGRES_PASSWORD: ${DB_PASS:-botpassword}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-botuser} -d ${DB_NAME:-tiinchrobot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - botnet
+
+  redis:
+    image: redis:7-alpine
+    container_name: tiinchrobot_redis
+    restart: always
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - botnet
+
+volumes:
+  postgres_data:
+  redis_data:
+  bot_temp:
+
+networks:
+  botnet:
+    driver: bridge

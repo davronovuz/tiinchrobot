@@ -8,7 +8,6 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher.filters import Text
 from aiogram.utils.exceptions import BotBlocked, ChatNotFound, RetryAfter, Unauthorized
 
-# Reklama yuborish jarayonlarini saqlash uchun ro'yxat
 advertisements = []
 
 class ReklamaTuriState(StatesGroup):
@@ -31,7 +30,7 @@ class Advertisement:
         self.sent_count = 0
         self.failed_count = 0
         self.total_users = 0
-        self.current_message = None  # Admin bilan aloqa uchun xabar
+        self.current_message = None
         self.task = None
 
     async def start(self):
@@ -40,7 +39,7 @@ class Advertisement:
             delay = (self.send_time - datetime.datetime.now()).total_seconds()
             if delay > 0:
                 await asyncio.sleep(delay)
-        users = user_db.select_all_users()
+        users = await user_db.select_all_users()
         self.total_users = len(users)
         self.current_message = await bot.send_message(
             chat_id=self.creator_id,
@@ -57,7 +56,7 @@ class Advertisement:
             if not self.running:
                 break
             try:
-                await send_advertisement_to_user(user[1], self)
+                await send_advertisement_to_user(user["telegram_id"], self)
                 self.sent_count += 1
             except (BotBlocked, ChatNotFound, Unauthorized):
                 self.failed_count += 1
@@ -143,11 +142,11 @@ async def check_super_admin_permission(telegram_id: int):
     return telegram_id in ADMINS
 
 async def check_admin_permission(telegram_id: int):
-    user = user_db.select_user(telegram_id=telegram_id)
+    user = await user_db.select_user(telegram_id=telegram_id)
     if not user:
         return False
-    user_id = user[0]
-    admin = user_db.check_if_admin(user_id=user_id)
+    user_id = user["id"]
+    admin = await user_db.check_if_admin(user_id=user_id)
     return admin
 
 @dp.message_handler(commands="reklom")
@@ -224,8 +223,6 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
         return
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(*buttons)
-    data = await state.get_data()
-    ad_message = data.get('ad_content')
     await state.update_data(keyboard=keyboard)
     await bot.send_message(chat_id=message.chat.id, text="Reklamani yuborishni tasdiqlaysizmi?", reply_markup=get_confirm_keyboard())
 

@@ -7,11 +7,9 @@ async def bot_start(message: types.Message):
     telegram_id = message.from_user.id
     username = message.from_user.username or message.from_user.full_name
 
-    # Foydalanuvchi bazada mavjudligini tekshirish
-    user = user_db.select_user(telegram_id=telegram_id)
+    user = await user_db.select_user(telegram_id=telegram_id)
     if not user:
-        # Yangi foydalanuvchini bazaga qo'shish
-        user_db.add_user(telegram_id=telegram_id, username=username)
+        await user_db.add_user(telegram_id=telegram_id, username=username)
         welcome_text = (
             f"🌟 Salom va xush kelibsiz, {message.from_user.full_name}! 🎉\n\n"
             "🤖 <b>Tinchrobot</b> – <i>'Maksimal tinchlikni xohlovchilar uchun'</i> 🕊️✨\n\n"
@@ -23,8 +21,7 @@ async def bot_start(message: types.Message):
         )
         await message.answer(welcome_text, parse_mode="HTML")
     else:
-        # Foydalanuvchini qayta kelganligini yangilash va xush kelibsiz xabarini yuborish
-        user_db.update_user_last_active(telegram_id=telegram_id)
+        await user_db.update_user_last_active(telegram_id=telegram_id)
         welcome_back_text = (
             f"🌟 Assalomu alaykum, {message.from_user.full_name}! 🎉\n\n"
             "🤖 Sizni yana <b>Tinchrobot</b>da ko'rishdan xursandmiz! 🕊️\n"
