@@ -184,8 +184,9 @@ async def search_music_youtube(query):
 
         try:
             import curl_cffi  # noqa: F401
-            ydl_opts['impersonate'] = 'chrome'
-        except ImportError:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            ydl_opts['impersonate'] = ImpersonateTarget('chrome', '131', 'macos', '14')
+        except (ImportError, Exception):
             pass
 
         def _search():

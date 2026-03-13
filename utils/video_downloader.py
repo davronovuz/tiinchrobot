@@ -436,8 +436,9 @@ def _download_with_ytdlp(url: str) -> dict:
     # curl_cffi brauzer impersonatsiyasi (TLS fingerprint)
     try:
         import curl_cffi  # noqa: F401
-        ydl_opts['impersonate'] = 'chrome'
-    except ImportError:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        ydl_opts['impersonate'] = ImpersonateTarget('chrome', '131', 'macos', '14')
+    except (ImportError, Exception):
         pass
 
     try:
