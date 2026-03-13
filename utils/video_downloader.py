@@ -284,11 +284,11 @@ def _extract_instagram_shortcode(url: str) -> str:
     return None
 
 
-def _get_instagram_cookies_str() -> str:
-    """cookies.txt dan Instagram cookies ni string sifatida olish"""
-    cookie_str = ""
+def _get_instagram_cookies() -> dict:
+    """cookies.txt dan Instagram cookies ni dict sifatida olish"""
+    cookies = {}
     if not os.path.exists(COOKIES_FILE):
-        return cookie_str
+        return cookies
     try:
         with open(COOKIES_FILE, "r") as f:
             for line in f:
@@ -296,28 +296,27 @@ def _get_instagram_cookies_str() -> str:
                 if ".instagram.com" in line and not line.startswith("#"):
                     parts = line.split("\t")
                     if len(parts) >= 7:
-                        cookie_str += f"{parts[5]}={parts[6]}; "
+                        cookies[parts[5]] = parts[6]
     except Exception:
         pass
-    return cookie_str
+    return cookies
 
 
 async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
     """Instagram v1 API — sessionid bilan media ma'lumotlarini olish"""
-    cookies_str = _get_instagram_cookies_str()
-    if not cookies_str or "sessionid" not in cookies_str:
+    cookies = _get_instagram_cookies()
+    if not cookies.get("sessionid"):
         logger.warning("[Instagram v1] sessionid yo'q")
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, cookies=cookies) as client:
             # v1 API - media info
             resp = await client.get(
                 f"https://i.instagram.com/api/v1/media/{shortcode}/info/",
                 headers={
                     "User-Agent": "Instagram 275.0.0.27.98 Android (33/13; 440dpi; 1080x2400; samsung; SM-A536B; a53x; exynos1280; en_US; 458229258)",
                     "X-IG-App-ID": "567067343352427",
-                    "Cookie": cookies_str,
                 }
             )
 
@@ -364,8 +363,8 @@ async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
 
 async def _download_instagram_stories(url: str) -> dict:
     """Instagram Stories yuklab olish — v1 API orqali"""
-    cookies_str = _get_instagram_cookies_str()
-    if not cookies_str or "sessionid" not in cookies_str:
+    cookies = _get_instagram_cookies()
+    if not cookies.get("sessionid"):
         logger.warning("[Stories] sessionid yo'q")
         return None
 
@@ -382,11 +381,10 @@ async def _download_instagram_stories(url: str) -> dict:
     ig_headers = {
         "User-Agent": "Instagram 275.0.0.27.98 Android (33/13; 440dpi; 1080x2400; samsung; SM-A536B; a53x; exynos1280; en_US; 458229258)",
         "X-IG-App-ID": "567067343352427",
-        "Cookie": cookies_str,
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, cookies=cookies) as client:
             # 1. Username dan user_id olish
             resp = await client.get(
                 f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
@@ -558,8 +556,8 @@ def _download_with_ytdlp(url: str) -> dict:
     if platform == "YouTube":
         ydl_opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['web', 'web_safari', 'android_vr'],
-                'player_skip': ['configs'],
+                'player_client': ['android_vr', 'mediaconnect'],
+                'player_skip': [],
             },
             # bgutil PO token provider — avtomatik token (Docker: http://bgutil:4416)
             'youtubepot-bgutilhttp': {
@@ -693,8 +691,8 @@ def _extract_youtube_formats(url: str) -> dict:
     if platform == "YouTube":
         ydl_opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['web', 'web_safari', 'android_vr'],
-                'player_skip': ['configs'],
+                'player_client': ['android_vr', 'mediaconnect'],
+                'player_skip': [],
             },
             'youtubepot-bgutilhttp': {
                 'base_url': [BGUTIL_URL],
@@ -881,8 +879,8 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
         }],
         'extractor_args': {
             'youtube': {
-                'player_client': ['web', 'web_safari', 'android_vr'],
-                'player_skip': ['configs'],
+                'player_client': ['android_vr', 'mediaconnect'],
+                'player_skip': [],
             },
             'youtubepot-bgutilhttp': {
                 'base_url': [BGUTIL_URL],
@@ -957,8 +955,8 @@ def _download_youtube_audio(url: str) -> dict:
         }],
         'extractor_args': {
             'youtube': {
-                'player_client': ['web', 'web_safari', 'android_vr'],
-                'player_skip': ['configs'],
+                'player_client': ['android_vr', 'mediaconnect'],
+                'player_skip': [],
             },
             'youtubepot-bgutilhttp': {
                 'base_url': [BGUTIL_URL],
