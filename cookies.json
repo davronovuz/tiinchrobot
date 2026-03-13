@@ -1,5 +1,11 @@
 {
-    "instagram": [],
+    "instagram": [
+        "sessionid=77401813836%3A2rK2M4wJ9Vy0Bc%3A15%3AAYiAtipKm1EmuJHBgf9CPC3JdnI6ag4RA8L7Uqd1EX0; Domain=.instagram.com; Path=/; Secure; HttpOnly",
+        "csrftoken=m8blaaJj7I_PgL31WUNZy_; Domain=.instagram.com; Path=/; Secure",
+        "datr=ORa0aWPctgFOeweblsf3M2aJ; Domain=.instagram.com; Path=/; Secure; HttpOnly",
+        "ig_did=C0BACC97-3B64-415D-8540-C5F2843A1AD4; Domain=.instagram.com; Path=/; Secure; HttpOnly",
+        "mid=abQWOgALAAG6ITGrQqYTPCngiCnN; Domain=.instagram.com; Path=/; Secure"
+    ],
     "youtube": [],
     "twitter": []
 }
