@@ -52,8 +52,8 @@ services:
       RATELIMIT_MAX: "30"
       TUNNEL_LIFESPAN: "120"
       # WARP proxy orqali YouTube IP blokirovkadan o'tish
-      HTTP_PROXY: "socks5://warp:1080"
-      HTTPS_PROXY: "socks5://warp:1080"
+      HTTP_PROXY: "socks5://warp:9091"
+      HTTPS_PROXY: "socks5://warp:9091"
     volumes:
       - ./cookies.json:/cookies.json:ro
     depends_on:
@@ -64,11 +64,13 @@ services:
 
   # Cloudflare WARP — YouTube datacenter IP blokirovkasini chetlab o'tish
   warp:
-    image: cmj2002/warp-svc
+    image: monius/docker-warp-socks
     container_name: tiinchrobot_warp
     restart: always
     cap_add:
       - NET_ADMIN
+    environment:
+      - WARP_SLEEP=2
     volumes:
       - warp_data:/var/lib/cloudflare-warp
     networks:
