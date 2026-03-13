@@ -556,7 +556,7 @@ def _download_with_ytdlp(url: str) -> dict:
     if platform == "YouTube":
         ydl_opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['android_vr'],
+                'player_client': ['web'],
                 'player_skip': [],
             },
             # bgutil PO token provider — avtomatik token (Docker: http://bgutil:4416)
@@ -565,17 +565,9 @@ def _download_with_ytdlp(url: str) -> dict:
             },
         }
 
-    # Cookies va impersonate — faqat YouTube bo'lmagan platformalar uchun
-    # YouTube cookies/impersonate bilan bloklaydi, bgutil PO token yetarli
-    if platform != "YouTube":
-        if os.path.exists(COOKIES_FILE):
-            ydl_opts['cookiefile'] = COOKIES_FILE
-        try:
-            import curl_cffi  # noqa: F401
-            from yt_dlp.networking.impersonate import ImpersonateTarget
-            ydl_opts['impersonate'] = ImpersonateTarget('chrome', '131', 'macos', '14')
-        except (ImportError, Exception):
-            pass
+    # Cookies (YouTube login + Instagram sessionid)
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts['cookiefile'] = COOKIES_FILE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -691,7 +683,7 @@ def _extract_youtube_formats(url: str) -> dict:
     if platform == "YouTube":
         ydl_opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['android_vr'],
+                'player_client': ['web'],
                 'player_skip': [],
             },
             'youtubepot-bgutilhttp': {
@@ -699,7 +691,8 @@ def _extract_youtube_formats(url: str) -> dict:
             },
         }
 
-    # YouTube uchun cookies/impersonate ISHLATMAYMIZ (bloklaydi)
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts['cookiefile'] = COOKIES_FILE
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -871,7 +864,7 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
         }],
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_vr'],
+                'player_client': ['web'],
                 'player_skip': [],
             },
             'youtubepot-bgutilhttp': {
@@ -879,7 +872,8 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
             },
         },
     }
-    # YouTube uchun cookies/impersonate ISHLATMAYMIZ
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts['cookiefile'] = COOKIES_FILE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -938,7 +932,7 @@ def _download_youtube_audio(url: str) -> dict:
         }],
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_vr'],
+                'player_client': ['web'],
                 'player_skip': [],
             },
             'youtubepot-bgutilhttp': {
@@ -946,7 +940,8 @@ def _download_youtube_audio(url: str) -> dict:
             },
         },
     }
-    # YouTube uchun cookies/impersonate ISHLATMAYMIZ
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts['cookiefile'] = COOKIES_FILE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
