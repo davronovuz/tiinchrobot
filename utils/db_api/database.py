@@ -9,7 +9,7 @@ class Database:
         self.pool = None
 
     async def create_pool(self, dsn: str):
-        self.pool = await asyncpg.create_pool(dsn=dsn, min_size=5, max_size=20)
+        self.pool = await asyncpg.create_pool(dsn=dsn, min_size=5, max_size=20, ssl=False)
         logger.info("PostgreSQL pool yaratildi")
 
     async def execute(self, sql: str, *args, fetch=False, fetchval=False, fetchrow=False):
