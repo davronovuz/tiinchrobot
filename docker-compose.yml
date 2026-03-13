@@ -27,6 +27,9 @@ services:
     restart: always
     environment:
       API_URL: "http://cobalt:9000"
+      COOKIE_PATH: "/cookies.json"
+    volumes:
+      - ./cookies.json:/cookies.json:ro
     networks:
       - botnet
 

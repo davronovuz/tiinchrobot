@@ -1,4 +1,5 @@
 import asyncio
+import os
 import httpx
 from bs4 import BeautifulSoup
 from aiogram import types
@@ -15,6 +16,8 @@ from keyboards.default.menu_i import world_track, top_track, main_btn
 from utils.misc.download_file import world_music, main_data, top_music, new_trek
 
 logger = logging.getLogger(__name__)
+
+COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
 
 
 # /tiktok, /top, /new komandalari
@@ -81,7 +84,8 @@ async def remove(callback: types.CallbackQuery):
 user_results = {}
 
 
-# Qidiruv funksiyalari (3 ta saytdan parallel qidirish)
+# === Qidiruv funksiyalari (Uz saytlar + YouTube Music) ===
+
 async def search_music_muztv(query):
     search_url = f"http://muztv.uz/index.php?do=search&subaction=search&story={query}"
     results = []
@@ -99,7 +103,7 @@ async def search_music_muztv(query):
                     if title and artist and url:
                         if url.startswith("/"):
                             url = f"https://muztv.uz{url}"
-                        results.append({"title": title, "artist": artist, "url": url, "source": "muztv"})
+                        results.append({"title": title, "artist": artist, "url": url, "source": "muztv", "type": "direct"})
         except Exception as e:
             logger.error(f"muztv.uz xatolik: {e}")
     return results
@@ -124,7 +128,7 @@ async def search_music_xitmuzon(query):
                         if url.startswith("/"):
                             url = f"https://xitmuzon.net{url}"
                         if url:
-                            results.append({"title": title, "artist": artist, "url": url, "source": "xitmuzon"})
+                            results.append({"title": title, "artist": artist, "url": url, "source": "xitmuzon", "type": "direct"})
         except Exception as e:
             logger.error(f"xitmuzon.net xatolik: {e}")
     return results
@@ -147,37 +151,101 @@ async def search_music_uzhits(query):
                     if title and artist and url:
                         if url.startswith("/"):
                             url = f"https://uzhits.net{url}"
-                        results.append({"title": title, "artist": artist, "url": url, "source": "uzhits"})
+                        results.append({"title": title, "artist": artist, "url": url, "source": "uzhits", "type": "direct"})
         except Exception as e:
             logger.error(f"uzhits.net xatolik: {e}")
     return results
 
 
+async def search_music_youtube(query):
+    """YouTube Music dan musiqa qidirish (yt-dlp orqali) — HAMMA musiqa topiladi"""
+    results = []
+    try:
+        import yt_dlp
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'default_search': 'ytsearch15',
+            'socket_timeout': 15,
+        }
+        if os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
+
+        def _search():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                search_results = ydl.extract_info(f"ytsearch15:{query} audio", download=False)
+                if search_results and 'entries' in search_results:
+                    for entry in search_results['entries']:
+                        if entry is None:
+                            continue
+                        title = entry.get('title', '')
+                        uploader = entry.get('uploader', entry.get('channel', ''))
+                        video_url = entry.get('url', '')
+                        video_id = entry.get('id', '')
+                        duration = entry.get('duration', 0)
+
+                        if not title or not video_id:
+                            continue
+
+                        # Audio/Music kontentni afzal ko'ramiz
+                        results.append({
+                            "title": title,
+                            "artist": uploader or "YouTube",
+                            "url": f"https://www.youtube.com/watch?v={video_id}",
+                            "source": "youtube",
+                            "type": "ytdlp",
+                            "duration": duration or 0,
+                        })
+            return results
+
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, _search)
+    except Exception as e:
+        logger.error(f"YouTube Music qidiruvda xatolik: {e}")
+    return results
+
+
 async def search_music(query):
-    """3 ta saytdan parallel qidirish (tezroq)"""
+    """Barcha manbalardan parallel qidirish"""
     tasks = [
         search_music_muztv(query),
         search_music_xitmuzon(query),
         search_music_uzhits(query),
+        search_music_youtube(query),
     ]
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_results = []
     seen_titles = set()
-    for results in results_list:
+
+    # Avval O'zbek saytlar natijalarini qo'shamiz (tezroq yuklanadi)
+    for results in results_list[:3]:
         if isinstance(results, Exception):
             logger.error(f"Qidiruv xatosi: {results}")
             continue
         for item in results:
-            key = f"{item['artist'].lower()}-{item['title'].lower()}"
+            key = f"{item['artist'].lower().strip()}-{item['title'].lower().strip()}"
             if key not in seen_titles:
                 seen_titles.add(key)
                 all_results.append(item)
 
+    # Keyin YouTube natijalarini qo'shamiz
+    yt_results = results_list[3] if not isinstance(results_list[3], Exception) else []
+    if isinstance(yt_results, Exception):
+        logger.error(f"YouTube qidiruv xatosi: {yt_results}")
+        yt_results = []
+    for item in yt_results:
+        key = f"{item['artist'].lower().strip()}-{item['title'].lower().strip()}"
+        if key not in seen_titles:
+            seen_titles.add(key)
+            all_results.append(item)
+
     return all_results
 
 
-# Xabarni qayta ishlash (musiqa qidirish)
+# === Xabarni qayta ishlash (musiqa qidirish) ===
+
 @dp.message_handler()
 async def handle_message(message: types.Message):
     search_query = message.text.strip()
@@ -197,7 +265,7 @@ async def handle_message(message: types.Message):
         }
         await send_results_page(message.chat.id)
     else:
-        await message.reply("Hech qanday natija topilmadi.")
+        await message.reply("Hech qanday natija topilmadi. Boshqa kalit so'z bilan urinib ko'ring.")
 
 
 async def send_results_page(chat_id):
@@ -219,8 +287,12 @@ async def send_results_page(chat_id):
     buttons = []
     for idx, info in enumerate(page_results, start=1):
         result_id = start_index + idx - 1
+        # YouTube natijalar uchun YT belgisi
+        label = f"{idx}"
+        if info.get("source") == "youtube":
+            label = f"▶{idx}"
         buttons.append(
-            InlineKeyboardButton(text=str(idx), callback_data=f"download:{result_id}:{chat_id}")
+            InlineKeyboardButton(text=label, callback_data=f"download:{result_id}:{chat_id}")
         )
     markup.add(*buttons)
 
@@ -241,8 +313,21 @@ async def send_results_page(chat_id):
     else:
         markup.add(clear_button)
 
-    response_text = f"🔍 **{search_query} (sahifa {page}/{total_pages}):**\n\n" + "\n".join(
-        [f"{idx}. {info['artist']} - {info['title']}" for idx, info in enumerate(page_results, start=1)]
+    # Natijalar ro'yxatini chiqarish
+    lines = []
+    for idx, info in enumerate(page_results, start=1):
+        source_tag = ""
+        if info.get("source") == "youtube":
+            source_tag = " [YT]"
+        dur = info.get("duration", 0)
+        dur_str = f" ({dur // 60}:{dur % 60:02d})" if dur else ""
+        lines.append(f"{idx}. {info['artist']} - {info['title']}{dur_str}{source_tag}")
+
+    total_text = f"Jami: {len(results)} natija"
+    response_text = (
+        f"🔍 **{search_query}** (sahifa {page}/{total_pages}):\n"
+        f"_{total_text}_\n\n"
+        + "\n".join(lines)
     )
 
     old_message_id = data.get("message_id")
@@ -308,6 +393,7 @@ async def download_callback_handler(callback_query: CallbackQuery):
         if user_data and 0 <= result_id < len(user_data["results"]):
             music_info = user_data["results"][result_id]
             url = music_info["url"]
+            source_type = music_info.get("type", "direct")
 
             # Avval cache tekshirish
             cached = await cache_db.get_file_id_by_url(url)
@@ -322,36 +408,181 @@ async def download_callback_handler(callback_query: CallbackQuery):
                 return
 
             await callback_query.answer("Yuklab olinmoqda, biroz kuting...")
-            async with httpx.AsyncClient(follow_redirects=True, verify=False) as client:
-                try:
-                    response = await client.get(
-                        url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60.0
-                    )
-                    if response.status_code == 200:
-                        file_data = BytesIO(response.content)
-                        file_data.seek(0)
-                        file_data.name = f"{music_info['artist']} - {music_info['title']}.mp3"
 
-                        caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
-
-                        sent_msg = await bot.send_audio(
-                            chat_id=callback_query.message.chat.id,
-                            audio=file_data,
-                            caption=caption,
-                            title=music_info["title"],
-                            performer=music_info["artist"],
-                        )
-                        # Cache ga saqlash
-                        if sent_msg.audio:
-                            await cache_db.add_cache(
-                                music_info["source"], url, sent_msg.audio.file_id, "audio"
-                            )
-                    else:
-                        await callback_query.message.answer("Qo'shiqni yuklab olishda xatolik yuz berdi.")
-                except Exception as e:
-                    logger.error(f"Qo'shiq yuklash xatosi: {e}")
-                    await callback_query.message.answer("Qo'shiqni yuklab olishda xatolik yuz berdi.")
+            if source_type == "ytdlp":
+                # YouTube dan yt-dlp orqali audio yuklab olish
+                await _download_and_send_ytdlp_audio(callback_query, music_info)
+            else:
+                # To'g'ridan-to'g'ri URL dan yuklab olish
+                await _download_and_send_direct(callback_query, music_info)
         else:
             await callback_query.answer("Yuklab olish havolasi topilmadi.")
     else:
         await callback_query.answer("Noto'g'ri ma'lumot.")
+
+
+async def _download_and_send_direct(callback_query, music_info):
+    """O'zbek saytlardan to'g'ridan-to'g'ri mp3 yuklab olish"""
+    url = music_info["url"]
+    async with httpx.AsyncClient(follow_redirects=True, verify=False) as client:
+        try:
+            response = await client.get(
+                url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60.0
+            )
+            if response.status_code == 200:
+                file_data = BytesIO(response.content)
+                file_data.seek(0)
+                file_data.name = f"{music_info['artist']} - {music_info['title']}.mp3"
+
+                caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
+
+                sent_msg = await bot.send_audio(
+                    chat_id=callback_query.message.chat.id,
+                    audio=file_data,
+                    caption=caption,
+                    title=music_info["title"],
+                    performer=music_info["artist"],
+                )
+                # Cache ga saqlash
+                if sent_msg.audio:
+                    await cache_db.add_cache(
+                        music_info["source"], url, sent_msg.audio.file_id, "audio"
+                    )
+            else:
+                await callback_query.message.answer("Qo'shiqni yuklab olishda xatolik yuz berdi.")
+        except Exception as e:
+            logger.error(f"Direct yuklab olish xatosi: {e}")
+            await callback_query.message.answer("Qo'shiqni yuklab olishda xatolik yuz berdi.")
+
+
+async def _download_and_send_ytdlp_audio(callback_query, music_info):
+    """YouTube dan yt-dlp orqali audio yuklab olish"""
+    import tempfile
+    url = music_info["url"]
+    tmp_dir = tempfile.mkdtemp(prefix="ytmusic_")
+
+    try:
+        import yt_dlp
+
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl': os.path.join(tmp_dir, '%(id)s.%(ext)s'),
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+        }
+
+        if os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
+
+        # YouTube extractor sozlamalari
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['android,web'],
+                'player_skip': ['webpage', 'configs'],
+            }
+        }
+
+        try:
+            import curl_cffi
+            ydl_opts['impersonate'] = 'chrome'
+        except ImportError:
+            pass
+
+        def _download():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info is None:
+                    return None, None
+
+                # mp3 faylni topish
+                file_path = ydl.prepare_filename(info)
+                base, _ = os.path.splitext(file_path)
+                mp3_path = base + '.mp3'
+                if os.path.exists(mp3_path):
+                    file_path = mp3_path
+                elif not os.path.exists(file_path):
+                    for ext in ['.mp3', '.m4a', '.webm', '.opus']:
+                        candidate = base + ext
+                        if os.path.exists(candidate):
+                            file_path = candidate
+                            break
+
+                return info, file_path
+
+        loop = asyncio.get_event_loop()
+        info, file_path = await loop.run_in_executor(None, _download)
+
+        if not info or not file_path or not os.path.exists(file_path):
+            await callback_query.message.answer("YouTube dan audio yuklab olishda xatolik.")
+            return
+
+        title = info.get('title', music_info.get('title', 'Audio'))
+        artist = info.get('artist') or info.get('uploader', music_info.get('artist', ''))
+        duration = info.get('duration', 0)
+        thumbnail_url = info.get('thumbnail', '')
+
+        # Thumbnail yuklab olish
+        thumb_data = None
+        if thumbnail_url:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    thumb_resp = await client.get(thumbnail_url)
+                    if thumb_resp.status_code == 200:
+                        thumb_path = os.path.join(tmp_dir, "thumb.jpg")
+                        with open(thumb_path, "wb") as f:
+                            f.write(thumb_resp.content)
+                        thumb_data = thumb_path
+            except Exception:
+                pass
+
+        file_size = os.path.getsize(file_path)
+        if file_size > 50 * 1024 * 1024:
+            await callback_query.message.answer("Audio fayl hajmi juda katta (>50MB).")
+            return
+
+        caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
+
+        with open(file_path, "rb") as f:
+            audio_data = BytesIO(f.read())
+            audio_data.name = f"{artist} - {title}.mp3"
+            audio_data.seek(0)
+
+            kwargs = {
+                "chat_id": callback_query.message.chat.id,
+                "audio": audio_data,
+                "caption": caption,
+                "title": title[:64],
+                "performer": artist[:64],
+                "duration": duration,
+            }
+            if thumb_data and os.path.exists(thumb_data):
+                kwargs["thumb"] = open(thumb_data, "rb")
+
+            try:
+                sent_msg = await bot.send_audio(**kwargs)
+                if sent_msg.audio:
+                    await cache_db.add_cache("youtube", url, sent_msg.audio.file_id, "audio")
+            finally:
+                if "thumb" in kwargs and hasattr(kwargs["thumb"], "close"):
+                    kwargs["thumb"].close()
+
+    except Exception as e:
+        logger.error(f"YouTube audio yuklab olish xatosi: {e}", exc_info=True)
+        await callback_query.message.answer("YouTube dan audio yuklab olishda xatolik yuz berdi.")
+    finally:
+        # Vaqtinchalik fayllarni tozalash
+        try:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass

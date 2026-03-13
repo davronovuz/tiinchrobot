@@ -14,11 +14,16 @@ TEMP_DIR = tempfile.mkdtemp(prefix="tiinchbot_")
 # Cobalt API (Docker ichida ishlaydi)
 COBALT_API_URL = os.getenv("COBALT_API_URL", "http://cobalt:9000")
 
+# YouTube cookies fayli (yt-dlp uchun)
+COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
+
 SUPPORTED_PLATFORMS = {
     "instagram.com": "Instagram",
     "tiktok.com": "TikTok",
     "youtube.com": "YouTube",
     "youtu.be": "YouTube",
+    "youtube.com/shorts": "YouTube",
+    "music.youtube.com": "YouTube",
     "facebook.com": "Facebook",
     "fb.watch": "Facebook",
     "twitter.com": "Twitter",
@@ -48,34 +53,39 @@ def is_supported_url(url: str) -> bool:
 
 async def download_video(url: str) -> dict:
     """
-    Video yuklab olish.
+    Video yuklab olish (3 bosqichli fallback tizim).
     1-usul: Cobalt API (o'z serverimiz, barcha platformalar)
-    2-usul: TikTok uchun tikwm.com fallback
+    2-usul: Platformaga xos fallback (TikTok - tikwm)
+    3-usul: yt-dlp (universal fallback)
     """
     async with download_semaphore:
+        platform = get_platform_from_url(url)
+
         # 1. Cobalt API orqali
         result = await _download_cobalt(url)
         if result:
+            logger.info(f"Cobalt orqali yuklandi: {platform}")
             return result
 
-        # 2. TikTok uchun tikwm fallback
-        platform = get_platform_from_url(url)
+        # 2. Platformaga xos fallback
         if platform == "TikTok":
             result = await _download_tiktok(url)
             if result:
+                logger.info("tikwm orqali yuklandi: TikTok")
                 return result
 
-        # 3. yt-dlp fallback
+        # 3. yt-dlp universal fallback
         try:
-            import yt_dlp
             result = await asyncio.get_event_loop().run_in_executor(
                 None, _download_with_ytdlp, url
             )
             if result:
+                logger.info(f"yt-dlp orqali yuklandi: {platform}")
                 return result
         except Exception as e:
             logger.error(f"yt-dlp fallback xatosi: {e}")
 
+        logger.warning(f"Barcha usullar muvaffaqiyatsiz: {platform} - {url}")
         return None
 
 
@@ -206,24 +216,47 @@ async def _download_tiktok(url: str) -> dict:
 
 
 def _download_with_ytdlp(url: str) -> dict:
-    """yt-dlp orqali yuklash (fallback)"""
+    """yt-dlp orqali yuklash (universal fallback)"""
     import yt_dlp
     output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
 
     ydl_opts = {
         'outtmpl': output_template,
-        'format': 'best[filesize<2G]/bestvideo[filesize<2G]+bestaudio/best',
+        'format': 'bestvideo[height<=1080][filesize<2G]+bestaudio/best[height<=1080][filesize<2G]/best',
         'merge_output_format': 'mp4',
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 30,
-        'retries': 3,
+        'retries': 5,
+        'fragment_retries': 5,
+        'file_access_retries': 3,
+        'extractor_retries': 3,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }],
     }
 
+    # YouTube uchun maxsus sozlamalar
+    platform = get_platform_from_url(url)
+    if platform == "YouTube":
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['android,web'],
+                'player_skip': ['webpage', 'configs'],
+            }
+        }
+
+    # Cookies fayli mavjud bo'lsa ishlatamiz
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts['cookiefile'] = COOKIES_FILE
+        logger.info("yt-dlp cookies fayli ishlatilmoqda")
+
+    # curl_cffi mavjud bo'lsa brauzer impersonatsiyasi
     try:
         import curl_cffi
         ydl_opts['impersonate'] = 'chrome'
@@ -237,6 +270,7 @@ def _download_with_ytdlp(url: str) -> dict:
                 return None
 
             file_path = ydl.prepare_filename(info)
+            # merge_output_format mp4 ni hisobga olamiz
             if not os.path.exists(file_path):
                 base, _ = os.path.splitext(file_path)
                 for ext in ['.mp4', '.mkv', '.webm', '.mp3', '.m4a']:
@@ -254,7 +288,7 @@ def _download_with_ytdlp(url: str) -> dict:
                 'duration': info.get('duration', 0),
                 'filesize': os.path.getsize(file_path),
                 'thumbnail': info.get('thumbnail', ''),
-                'platform': get_platform_from_url(url),
+                'platform': platform,
                 'width': info.get('width', 0),
                 'height': info.get('height', 0),
             }
