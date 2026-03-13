@@ -18,6 +18,7 @@ services:
         condition: service_started
     volumes:
       - bot_temp:/tmp/tiinchbot_downloads
+      - ./cookies.txt:/app/cookies.txt:ro
     networks:
       - botnet
 
@@ -25,9 +26,18 @@ services:
     image: ghcr.io/imputnet/cobalt:10
     container_name: tiinchrobot_cobalt
     restart: always
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     environment:
       API_URL: "http://cobalt:9000"
+      API_PORT: "9000"
       COOKIE_PATH: "/cookies.json"
+      DURATION_LIMIT: "3600"
+      RATELIMIT_WINDOW: "60"
+      RATELIMIT_MAX: "30"
+      TUNNEL_LIFESPAN: "120"
     volumes:
       - ./cookies.json:/cookies.json:ro
     networks:

@@ -1,0 +1,7 @@
+# Netscape HTTP Cookie File
+# Bu faylga YouTube/Instagram cookies ni joylashtiring
+# Firefox: about:preferences#privacy > Cookies > Export
+# Chrome: "Get cookies.txt LOCALLY" kengaytmasi orqali
+#
+# Misol format:
+# .youtube.com	TRUE	/	TRUE	1234567890	cookie_name	cookie_value

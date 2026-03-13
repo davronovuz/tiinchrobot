@@ -140,3 +140,8 @@ redis_data/
 
 # Temp downloads
 /tmp/tiinchbot_*
+
+# Cookies (maxfiy ma'lumot — git ga qo'shmang!)
+# Bo'sh namuna fayllarini force add qiling: git add -f cookies.json cookies.txt
+# cookies.json  # Cobalt uchun (Instagram/YouTube session)
+# cookies.txt   # yt-dlp uchun (Netscape format)

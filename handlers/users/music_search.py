@@ -470,25 +470,27 @@ async def _download_and_send_ytdlp_audio(callback_query, music_info):
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
-            'retries': 3,
+            'retries': 10,
+            'fragment_retries': 10,
+            'extractor_retries': 5,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
             },
         }
 
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
 
-        # YouTube extractor sozlamalari
+        # YouTube extractor sozlamalari (2026 mart — yangilangan)
         ydl_opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['android,web'],
-                'player_skip': ['webpage', 'configs'],
+                'player_client': ['web', 'web_safari', 'android_vr'],
+                'player_skip': ['configs'],
             }
         }
 
