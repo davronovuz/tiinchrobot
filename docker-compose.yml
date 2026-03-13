@@ -40,20 +40,16 @@ services:
       # API sozlamalari
       API_URL: "http://cobalt:9000"
       API_PORT: "9000"
-      # YouTube uchun muhim sozlamalar
+      # YouTube — TV client ishlaydi
       COOKIE_PATH: "/cookies.json"
-      CUSTOM_INNERTUBE_CLIENT: "TV_SIMPLY"
-      YOUTUBE_GENERATE_PO_TOKENS: "1"
-      YOUTUBE_USE_ONESIE: "1"
-      YOUTUBE_PLAYER_ID: "9f4cc5e4"
+      CUSTOM_INNERTUBE_CLIENT: "TV"
       # Limitlar
       DURATION_LIMIT: "3600"
       RATELIMIT_WINDOW: "60"
       RATELIMIT_MAX: "30"
       TUNNEL_LIFESPAN: "120"
       # WARP proxy orqali YouTube IP blokirovkadan o'tish
-      HTTP_PROXY: "socks5://warp:9091"
-      HTTPS_PROXY: "socks5://warp:9091"
+      API_EXTERNAL_PROXY: "socks5://warp:9091"
     volumes:
       - ./cookies.json:/cookies.json:ro
     depends_on:
