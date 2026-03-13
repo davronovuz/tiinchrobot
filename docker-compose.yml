@@ -20,7 +20,7 @@ services:
         condition: service_started
     volumes:
       - bot_temp:/tmp/tiinchbot_downloads
-      - ./cookies.txt:/app/cookies.txt:ro
+      - ./cookies.txt:/app/cookies.txt
     environment:
       COBALT_API_URL: "http://cobalt:9000"
       COOKIES_FILE: "/app/cookies.txt"
