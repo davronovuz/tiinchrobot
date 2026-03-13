@@ -1,23 +1,23 @@
+import asyncio
 import httpx
 from bs4 import BeautifulSoup
-from aiogram import Bot, Dispatcher, types
-
-from keyboards.default.menu_i import world_track, top_track, main_btn
-from utils.misc.download_file import  world_music, main_data, top_music, new_trek
+from aiogram import types
 from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
 )
-from aiogram.utils import executor
 from io import BytesIO
 import logging
-from loader import dp,bot
+from loader import dp, bot, cache_db
+
+from keyboards.default.menu_i import world_track, top_track, main_btn
+from utils.misc.download_file import world_music, main_data, top_music, new_trek
+
+logger = logging.getLogger(__name__)
 
 
-
-
-
+# /tiktok, /top, /new komandalari
 @dp.message_handler(commands='tiktok')
 async def tik_tok_handler(msg: types.Message):
     text = 'Siz uchun top 10 Tik-Tok Musiqalar!\n\n'
@@ -77,187 +77,129 @@ async def remove(callback: types.CallbackQuery):
     await callback.message.delete()
 
 
-
-
-
-
-
-
 # Foydalanuvchi qidiruv natijalarini saqlash uchun lug'at
 user_results = {}
 
 
-# muztv.uz saytidan qo'shiq qidirish funksiyasi
+# Qidiruv funksiyalari (3 ta saytdan parallel qidirish)
 async def search_music_muztv(query):
-
     search_url = f"http://muztv.uz/index.php?do=search&subaction=search&story={query}"
     results = []
-
-
-    async with httpx.AsyncClient(verify=False,follow_redirects=True) as client:
+    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
         try:
             response = await client.get(
-                search_url,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=30.0,
+                search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15.0
             )
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
-
-                # Qidiruv natijalarini chiqarish
                 for item in soup.find_all("div", class_="play-item"):
                     title = item.get("data-title")
                     artist = item.get("data-artist")
                     url = item.get("data-track")
-
                     if title and artist and url:
-                        # To'liq URL yaratish
                         if url.startswith("/"):
                             url = f"https://muztv.uz{url}"
-
-                        results.append(
-                            {
-                                "title": title,
-                                "artist": artist,
-                                "url": url,
-                                "source": "muztv",
-                            }
-                        )
+                        results.append({"title": title, "artist": artist, "url": url, "source": "muztv"})
         except Exception as e:
-            logging.error(f"Ma'lumot olishda xatolik (muztv.uz): {e}")
+            logger.error(f"muztv.uz xatolik: {e}")
     return results
 
 
-# xitmuzon.net saytidan qo'shiq qidirish funksiyasi
 async def search_music_xitmuzon(query):
     search_url = f"https://xitmuzon.net/index.php?do=search&subaction=search&story={query}"
     results = []
-
     async with httpx.AsyncClient(follow_redirects=True) as client:
         try:
             response = await client.get(
-                search_url,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=30.0,
+                search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15.0
             )
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
-
-                # Qidiruv natijalarini chiqarish
                 for item in soup.find_all("div", class_="track-item"):
                     title = item.get("data-title")
                     artist = item.get("data-artist")
-                    url = item.find("a", class_="track-dl")["href"]
-
-                    if title and artist and url:
-                        # To'liq URL yaratish
+                    dl_link = item.find("a", class_="track-dl")
+                    if title and artist and dl_link:
+                        url = dl_link.get("href", "")
                         if url.startswith("/"):
                             url = f"https://xitmuzon.net{url}"
-
-                        results.append(
-                            {
-                                "title": title,
-                                "artist": artist,
-                                "url": url,
-                                "source": "xitmuzon",
-                            }
-                        )
+                        if url:
+                            results.append({"title": title, "artist": artist, "url": url, "source": "xitmuzon"})
         except Exception as e:
-            logging.error(f"Ma'lumot olishda xatolik (xitmuzon.net): {e}")
+            logger.error(f"xitmuzon.net xatolik: {e}")
     return results
 
-# uzhits.net saytidan qo'shiq qidirish funksiyasi
+
 async def search_music_uzhits(query):
     search_url = f"https://uzhits.net/index.php?do=search&subaction=search&story={query}"
     results = []
-
     async with httpx.AsyncClient(follow_redirects=True) as client:
         try:
             response = await client.get(
-                search_url,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=30.0,
+                search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15.0
             )
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
-
-                # Qidiruv natijalarini chiqarish
                 for item in soup.find_all("div", class_="track-item"):
                     title = item.get("data-title")
                     artist = item.get("data-artist")
                     url = item.get("data-track")
-
                     if title and artist and url:
-                        # To'liq URL yaratish
                         if url.startswith("/"):
                             url = f"https://uzhits.net{url}"
-
-                        results.append(
-                            {
-                                "title": title,
-                                "artist": artist,
-                                "url": url,
-                                "source": "uzhits",
-                            }
-                        )
+                        results.append({"title": title, "artist": artist, "url": url, "source": "uzhits"})
         except Exception as e:
-            logging.error(f"Ma'lumot olishda xatolik (uzhits.net): {e}")
+            logger.error(f"uzhits.net xatolik: {e}")
     return results
 
-# Umumiy qidiruv funksiyasi
-# Umumiy qidiruv funksiyasi
+
 async def search_music(query):
-    results = []
+    """3 ta saytdan parallel qidirish (tezroq)"""
+    tasks = [
+        search_music_muztv(query),
+        search_music_xitmuzon(query),
+        search_music_uzhits(query),
+    ]
+    results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # muztv.uz saytidan qidirish (boshida ishlaydi)
-    muztv_results = await search_music_muztv(query)
-    results.extend(muztv_results)
+    all_results = []
+    seen_titles = set()
+    for results in results_list:
+        if isinstance(results, Exception):
+            logger.error(f"Qidiruv xatosi: {results}")
+            continue
+        for item in results:
+            key = f"{item['artist'].lower()}-{item['title'].lower()}"
+            if key not in seen_titles:
+                seen_titles.add(key)
+                all_results.append(item)
 
-    # xitmuzon.net saytidan qidirish
-    xitmuzon_results = await search_music_xitmuzon(query)
-    results.extend(xitmuzon_results)
-
-    # uzhits.net saytidan qidirish
-    uzhits_results = await search_music_uzhits(query)
-    results.extend(uzhits_results)
-
-    # muztv.uz saytidan qidirish
-    muztv_results = await search_music_muztv(query)
-    results.extend(muztv_results)
-
-    return results
+    return all_results
 
 
-# Xabarni qayta ishlash
+# Xabarni qayta ishlash (musiqa qidirish)
 @dp.message_handler()
 async def handle_message(message: types.Message):
-    logging.info(f"handle_message chaqirildi: {message.text}")
     search_query = message.text.strip()
-
     if not search_query:
         await message.reply("Iltimos, qidiruv so'zini kiriting.")
         return
 
-    # "Qidirilmoqda..." indikatorini ko'rsatish
     await bot.send_chat_action(message.chat.id, "typing")
 
-    # Qidiruv natijalarini olish
     all_results = await search_music(search_query)
 
     if all_results:
-        # Natijalarni saqlaymiz
         user_results[message.chat.id] = {
             "results": all_results,
             "current_page": 1,
             "query": search_query,
         }
-
-        # Birinchi sahifani ko'rsatamiz
         await send_results_page(message.chat.id)
     else:
         await message.reply("Hech qanday natija topilmadi.")
 
-# Natijalar sahifasini yuborish funksiyasi
+
 async def send_results_page(chat_id):
     data = user_results.get(chat_id)
     if not data:
@@ -273,73 +215,47 @@ async def send_results_page(chat_id):
     end_index = start_index + items_per_page
     page_results = results[start_index:end_index]
 
-    # Tugmalarni yaratish
     markup = InlineKeyboardMarkup(row_width=5)
     buttons = []
     for idx, info in enumerate(page_results, start=1):
         result_id = start_index + idx - 1
         buttons.append(
-            InlineKeyboardButton(
-                text=str(idx),
-                callback_data=f"download:{result_id}:{chat_id}",
-            )
+            InlineKeyboardButton(text=str(idx), callback_data=f"download:{result_id}:{chat_id}")
         )
     markup.add(*buttons)
 
-    # Paginatsiya tugmalari
     pagination_buttons = []
     if page > 1:
         pagination_buttons.append(
-            InlineKeyboardButton(
-                text="⬅️ Oldingi",
-                callback_data=f"page:{page - 1}:{chat_id}",
-            )
+            InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"page:{page - 1}:{chat_id}")
         )
     if page < total_pages:
         pagination_buttons.append(
-            InlineKeyboardButton(
-                text="Keyingi ➡️",
-                callback_data=f"page:{page + 1}:{chat_id}",
-            )
+            InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"page:{page + 1}:{chat_id}")
         )
 
-    # 'X' tugmasini qo'shamiz
-    clear_button = InlineKeyboardButton(
-        text="❌", callback_data=f"clear:{chat_id}"
-    )
-
-    # Paginatsiya tugmalarini qo'shamiz
+    clear_button = InlineKeyboardButton(text="❌", callback_data=f"clear:{chat_id}")
     if pagination_buttons:
         pagination_buttons.append(clear_button)
         markup.add(*pagination_buttons)
     else:
-        # Agar paginatsiya tugmalari bo'lmasa, faqat 'X' tugmasini qo'shamiz
         markup.add(clear_button)
 
-    # Qo'shiqlar ro'yxatini chop etish
     response_text = f"🔍 **{search_query} (sahifa {page}/{total_pages}):**\n\n" + "\n".join(
-        [
-            f"{idx}. {info['artist']} - {info['title']}"
-            for idx, info in enumerate(page_results, start=1)
-        ]
+        [f"{idx}. {info['artist']} - {info['title']}" for idx, info in enumerate(page_results, start=1)]
     )
 
-    # Agar eski xabar bo'lsa, uni o'chiramiz
     old_message_id = data.get("message_id")
     if old_message_id:
         try:
             await bot.delete_message(chat_id=chat_id, message_id=old_message_id)
-        except Exception as e:
-            logging.error(f"Xabarni o'chirishda xatolik: {e}")
+        except Exception:
+            pass
 
-    # Yangi xabarni yuboramiz
-    sent_message = await bot.send_message(
-        chat_id, response_text, reply_markup=markup, parse_mode="Markdown"
-    )
-    # Yangi xabar ID sini saqlaymiz
+    sent_message = await bot.send_message(chat_id, response_text, reply_markup=markup, parse_mode="Markdown")
     user_results[chat_id]["message_id"] = sent_message.message_id
 
-# Paginatsiya tugmalarini qayta ishlash
+
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith("page:"))
 async def pagination_callback_handler(callback_query: CallbackQuery):
     data_parts = callback_query.data.split(":")
@@ -347,7 +263,6 @@ async def pagination_callback_handler(callback_query: CallbackQuery):
         _, page_str, chat_id_str = data_parts
         page = int(page_str)
         chat_id = int(chat_id_str)
-
         user_data = user_results.get(chat_id)
         if user_data:
             user_data["current_page"] = page
@@ -358,23 +273,21 @@ async def pagination_callback_handler(callback_query: CallbackQuery):
     else:
         await callback_query.answer("Noto'g'ri ma'lumot.")
 
-# 'X' tugmasi bosilganda
+
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith("clear:"))
 async def clear_callback_handler(callback_query: CallbackQuery):
     data_parts = callback_query.data.split(":")
     if len(data_parts) == 2:
         _, chat_id_str = data_parts
         chat_id = int(chat_id_str)
-
         user_data = user_results.get(chat_id)
         if user_data:
             message_id = user_data.get("message_id")
             if message_id:
                 try:
                     await bot.delete_message(chat_id=chat_id, message_id=message_id)
-                except Exception as e:
-                    logging.error(f"Xabarni o'chirishda xatolik: {e}")
-            # Foydalanuvchi ma'lumotlarini o'chiramiz
+                except Exception:
+                    pass
             user_results.pop(chat_id, None)
             await callback_query.answer("Natijalar o'chirildi.")
         else:
@@ -382,13 +295,9 @@ async def clear_callback_handler(callback_query: CallbackQuery):
     else:
         await callback_query.answer("Noto'g'ri ma'lumot.")
 
-# Yuklab olish tugmasi bosilganda
-# Yuklab olish tugmasi bosilganda
-# Yuklab olish tugmasi bosilganda
+
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith("download:"))
 async def download_callback_handler(callback_query: CallbackQuery):
-    logging.info(f"download_callback_handler chaqirildi: {callback_query.data}")
-
     data_parts = callback_query.data.split(":")
     if len(data_parts) == 3:
         _, result_id_str, chat_id_str = data_parts
@@ -400,44 +309,49 @@ async def download_callback_handler(callback_query: CallbackQuery):
             music_info = user_data["results"][result_id]
             url = music_info["url"]
 
-            # Xabarni o'chirmaymiz va foydalanuvchi ma'lumotlarini saqlab qolamiz
+            # Avval cache tekshirish
+            cached = await cache_db.get_file_id_by_url(url)
+            if cached:
+                caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
+                await bot.send_audio(
+                    chat_id=callback_query.message.chat.id,
+                    audio=cached["file_id"],
+                    caption=caption,
+                )
+                await callback_query.answer()
+                return
 
-            # Qo'shiqni yuklab olish va yuborish
             await callback_query.answer("Yuklab olinmoqda, biroz kuting...")
-            async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with httpx.AsyncClient(follow_redirects=True, verify=False) as client:
                 try:
                     response = await client.get(
                         url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60.0
                     )
-
                     if response.status_code == 200:
                         file_data = BytesIO(response.content)
                         file_data.seek(0)
                         file_data.name = f"{music_info['artist']} - {music_info['title']}.mp3"
 
-                        # Matnni shakllantirish
-                        caption_text = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun! 🕊️"
+                        caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
 
-                        await bot.send_audio(
+                        sent_msg = await bot.send_audio(
                             chat_id=callback_query.message.chat.id,
                             audio=file_data,
-                            caption=caption_text,
+                            caption=caption,
                             title=music_info["title"],
                             performer=music_info["artist"],
-                            parse_mode="Markdown",
                         )
+                        # Cache ga saqlash
+                        if sent_msg.audio:
+                            await cache_db.add_cache(
+                                music_info["source"], url, sent_msg.audio.file_id, "audio"
+                            )
                     else:
-                        await callback_query.message.answer(
-                            "Qo'shiqni yuklab olishda xatolik yuz berdi."
-                        )
+                        await callback_query.message.answer("Qo'shiqni yuklab olishda xatolik yuz berdi.")
                 except Exception as e:
-                    logging.error(f"Qo'shiqni yuklab olishda xatolik: {e}")
-                    await callback_query.message.answer(
-                        "Qo'shiqni yuklab olishda xatolik yuz berdi."
-                    )
+                    logger.error(f"Qo'shiq yuklash xatosi: {e}")
+                    await callback_query.message.answer("Qo'shiqni yuklab olishda xatolik yuz berdi.")
         else:
             await callback_query.answer("Yuklab olish havolasi topilmadi.")
     else:
         await callback_query.answer("Noto'g'ri ma'lumot.")
-
-
