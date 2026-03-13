@@ -14,8 +14,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      cobalt:
+        condition: service_started
     volumes:
       - bot_temp:/tmp/tiinchbot_downloads
+    networks:
+      - botnet
+
+  cobalt:
+    image: ghcr.io/imputnet/cobalt:10
+    container_name: tiinchrobot_cobalt
+    restart: always
+    environment:
+      API_URL: "http://cobalt:9000"
     networks:
       - botnet
 

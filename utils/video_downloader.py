@@ -2,7 +2,6 @@ import os
 import asyncio
 import tempfile
 import logging
-import yt_dlp
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -11,6 +10,9 @@ MAX_CONCURRENT_DOWNLOADS = 5
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 TEMP_DIR = tempfile.mkdtemp(prefix="tiinchbot_")
+
+# Cobalt API (Docker ichida ishlaydi)
+COBALT_API_URL = os.getenv("COBALT_API_URL", "http://cobalt:9000")
 
 SUPPORTED_PLATFORMS = {
     "instagram.com": "Instagram",
@@ -46,61 +48,148 @@ def is_supported_url(url: str) -> bool:
 
 async def download_video(url: str) -> dict:
     """
-    Video yuklab olish — platforma ga qarab turli usullar.
+    Video yuklab olish.
+    1-usul: Cobalt API (o'z serverimiz, barcha platformalar)
+    2-usul: TikTok uchun tikwm.com fallback
     """
     async with download_semaphore:
-        platform = get_platform_from_url(url)
+        # 1. Cobalt API orqali
+        result = await _download_cobalt(url)
+        if result:
+            return result
 
-        # TikTok — tikwm.com API (eng ishonchli)
+        # 2. TikTok uchun tikwm fallback
+        platform = get_platform_from_url(url)
         if platform == "TikTok":
             result = await _download_tiktok(url)
             if result:
                 return result
 
-        # Instagram — yt-dlp bilan sinab koramiz
-        if platform == "Instagram":
-            result = await _download_instagram(url)
+        # 3. yt-dlp fallback
+        try:
+            import yt_dlp
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, _download_with_ytdlp, url
+            )
             if result:
                 return result
+        except Exception as e:
+            logger.error(f"yt-dlp fallback xatosi: {e}")
 
-        # Boshqa platformalar va fallback — yt-dlp
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, _download_with_ytdlp, url
-        )
-        return result
+        return None
+
+
+async def _download_cobalt(url: str) -> dict:
+    """Cobalt API orqali video yuklab olish (o'z serverimiz)"""
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            # Cobalt API ga so'rov
+            resp = await client.post(
+                COBALT_API_URL,
+                json={
+                    "url": url,
+                    "videoQuality": "1080",
+                    "filenameStyle": "basic",
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                }
+            )
+
+            if resp.status_code != 200:
+                logger.warning(f"Cobalt API xatosi: {resp.status_code} {resp.text[:200]}")
+                return None
+
+            data = resp.json()
+            status = data.get("status")
+
+            if status == "error":
+                logger.warning(f"Cobalt error: {data.get('error', {}).get('code', 'unknown')}")
+                return None
+
+            # Video URL ni olish
+            download_url = None
+            if status == "tunnel" or status == "redirect":
+                download_url = data.get("url")
+            elif status == "picker":
+                # Bir nechta media — birinchisini olamiz
+                items = data.get("picker", [])
+                if items:
+                    download_url = items[0].get("url")
+
+            if not download_url:
+                logger.warning(f"Cobalt: download URL topilmadi, status={status}")
+                return None
+
+            # Faylni yuklab olish
+            platform = get_platform_from_url(url)
+            file_ext = ".mp4"
+            file_path = os.path.join(TEMP_DIR, f"cobalt_{hash(url) & 0xFFFFFFFF}{file_ext}")
+
+            resp2 = await client.get(
+                download_url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=300,
+            )
+
+            if resp2.status_code != 200:
+                logger.error(f"Cobalt faylni yuklab olishda xatolik: {resp2.status_code}")
+                return None
+
+            with open(file_path, "wb") as f:
+                f.write(resp2.content)
+
+            filesize = os.path.getsize(file_path)
+            if filesize < 1000:  # 1KB dan kichik bo'lsa, xato
+                os.unlink(file_path)
+                return None
+
+            return {
+                'file_path': file_path,
+                'title': data.get('filename', f'{platform} Video'),
+                'duration': 0,
+                'filesize': filesize,
+                'thumbnail': '',
+                'platform': platform,
+                'width': 0,
+                'height': 0,
+            }
+
+    except httpx.ConnectError as e:
+        logger.warning(f"Cobalt ulanish xatosi (server ishlamayapti?): {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Cobalt yuklab olishda xatolik: {e}")
+        return None
 
 
 async def _download_tiktok(url: str) -> dict:
-    """TikTok — tikwm.com API orqali"""
+    """TikTok — tikwm.com API orqali (fallback)"""
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             resp = await client.get(
-                f"https://www.tikwm.com/api/",
+                "https://www.tikwm.com/api/",
                 params={"url": url, "hd": 1},
                 headers={"User-Agent": "Mozilla/5.0"}
             )
             if resp.status_code != 200:
-                logger.error(f"tikwm API xatosi: {resp.status_code}")
                 return None
 
             data = resp.json()
             if data.get("code") != 0 or not data.get("data"):
-                logger.error(f"tikwm javob xatosi: {data.get('msg')}")
                 return None
 
             video_data = data["data"]
-            # HD yoki oddiy video URL
             video_url = video_data.get("hdplay") or video_data.get("play")
             if not video_url:
                 return None
 
-            # Video ni yuklab olish
             file_path = os.path.join(TEMP_DIR, f"tiktok_{video_data.get('id', 'video')}.mp4")
             resp2 = await client.get(video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=120)
             if resp2.status_code == 200:
                 with open(file_path, "wb") as f:
                     f.write(resp2.content)
-
                 return {
                     'file_path': file_path,
                     'title': (video_data.get("title") or "TikTok Video")[:100],
@@ -116,54 +205,9 @@ async def _download_tiktok(url: str) -> dict:
     return None
 
 
-async def _download_instagram(url: str) -> dict:
-    """Instagram — avval yt-dlp, keyin API fallback"""
-    # yt-dlp bilan sinab koramiz
-    result = await asyncio.get_event_loop().run_in_executor(
-        None, _download_with_ytdlp, url
-    )
-    if result:
-        return result
-
-    # Fallback: igdownloader API
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.get(
-                "https://v3.igdownloader.app/api/ig/post",
-                params={"url": url},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "application/json",
-                }
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                medias = data.get("items", [])
-                if medias:
-                    media_url = medias[0].get("url", "")
-                    if media_url:
-                        file_path = os.path.join(TEMP_DIR, f"ig_{hash(url)}.mp4")
-                        resp2 = await client.get(media_url, timeout=120)
-                        if resp2.status_code == 200:
-                            with open(file_path, "wb") as f:
-                                f.write(resp2.content)
-                            return {
-                                'file_path': file_path,
-                                'title': 'Instagram Video',
-                                'duration': 0,
-                                'filesize': os.path.getsize(file_path),
-                                'thumbnail': '',
-                                'platform': 'Instagram',
-                                'width': 0,
-                                'height': 0,
-                            }
-    except Exception as e:
-        logger.error(f"Instagram fallback xatosi: {e}")
-    return None
-
-
 def _download_with_ytdlp(url: str) -> dict:
-    """yt-dlp orqali yuklash (YouTube, Facebook, Twitter va boshqalar)"""
+    """yt-dlp orqali yuklash (fallback)"""
+    import yt_dlp
     output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
 
     ydl_opts = {
@@ -175,13 +219,11 @@ def _download_with_ytdlp(url: str) -> dict:
         'no_warnings': True,
         'socket_timeout': 30,
         'retries': 3,
-        'extractor_retries': 3,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         },
     }
 
-    # Impersonation qo'shish (agar curl_cffi mavjud bo'lsa)
     try:
         import curl_cffi
         ydl_opts['impersonate'] = 'chrome'
@@ -195,7 +237,6 @@ def _download_with_ytdlp(url: str) -> dict:
                 return None
 
             file_path = ydl.prepare_filename(info)
-
             if not os.path.exists(file_path):
                 base, _ = os.path.splitext(file_path)
                 for ext in ['.mp4', '.mkv', '.webm', '.mp3', '.m4a']:
@@ -205,7 +246,6 @@ def _download_with_ytdlp(url: str) -> dict:
                         break
 
             if not os.path.exists(file_path):
-                logger.error(f"Fayl topilmadi: {file_path}")
                 return None
 
             return {
@@ -218,12 +258,8 @@ def _download_with_ytdlp(url: str) -> dict:
                 'width': info.get('width', 0),
                 'height': info.get('height', 0),
             }
-
-    except yt_dlp.utils.DownloadError as e:
-        logger.error(f"yt-dlp xatosi: {e}")
-        return None
     except Exception as e:
-        logger.error(f"Video yuklashda xatolik: {e}")
+        logger.error(f"yt-dlp xatosi: {e}")
         return None
 
 
