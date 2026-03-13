@@ -49,7 +49,7 @@ services:
       RATELIMIT_MAX: "30"
       TUNNEL_LIFESPAN: "120"
       # WARP proxy orqali YouTube IP blokirovkadan o'tish
-      API_EXTERNAL_PROXY: "socks5://warp:9091"
+      API_EXTERNAL_PROXY: "http://warp:9091"
     volumes:
       - ./cookies.json:/cookies.json:ro
     depends_on:
