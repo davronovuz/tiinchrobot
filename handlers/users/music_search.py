@@ -1,17 +1,19 @@
 import asyncio
 import os
+import tempfile
+import logging
+from io import BytesIO
+
 import httpx
-from bs4 import BeautifulSoup
 from aiogram import types
 from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
+    ContentType,
 )
-from io import BytesIO
-import logging
-from loader import dp, bot, cache_db
 
+from loader import dp, bot, cache_db
 from keyboards.default.menu_i import world_track, top_track, main_btn
 from utils.misc.download_file import world_music, main_data, top_music, new_trek
 
@@ -21,7 +23,10 @@ COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
 BGUTIL_URL = os.getenv("BGUTIL_URL", "http://bgutil:4416")
 
 
-# /tiktok, /top, /new komandalari
+# =====================================================
+# /tiktok, /top, /new komandalari (o'zgarmagan)
+# =====================================================
+
 @dp.message_handler(commands='tiktok')
 async def tik_tok_handler(msg: types.Message):
     text = 'Siz uchun top 10 Tik-Tok Musiqalar!\n\n'
@@ -81,93 +86,27 @@ async def remove(callback: types.CallbackQuery):
     await callback.message.delete()
 
 
-# Foydalanuvchi qidiruv natijalarini saqlash uchun lug'at
+# =====================================================
+# Foydalanuvchi qidiruv natijalarini saqlash
+# =====================================================
 user_results = {}
 
 
-# === Qidiruv funksiyalari (Uz saytlar + YouTube Music) ===
+# =====================================================
+# YouTube Music qidiruv (asosiy va yagona qidiruv)
+# =====================================================
 
-async def search_music_muztv(query):
-    search_url = f"http://muztv.uz/index.php?do=search&subaction=search&story={query}"
-    results = []
-    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
-        try:
-            response = await client.get(
-                search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15.0
-            )
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-                for item in soup.find_all("div", class_="play-item"):
-                    title = item.get("data-title")
-                    artist = item.get("data-artist")
-                    url = item.get("data-track")
-                    if title and artist and url:
-                        if url.startswith("/"):
-                            url = f"https://muztv.uz{url}"
-                        results.append({"title": title, "artist": artist, "url": url, "source": "muztv", "type": "direct"})
-        except Exception as e:
-            logger.error(f"muztv.uz xatolik: {e}")
-    return results
-
-
-async def search_music_xitmuzon(query):
-    search_url = f"https://xitmuzon.net/index.php?do=search&subaction=search&story={query}"
-    results = []
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        try:
-            response = await client.get(
-                search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15.0
-            )
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-                for item in soup.find_all("div", class_="track-item"):
-                    title = item.get("data-title")
-                    artist = item.get("data-artist")
-                    dl_link = item.find("a", class_="track-dl")
-                    if title and artist and dl_link:
-                        url = dl_link.get("href", "")
-                        if url.startswith("/"):
-                            url = f"https://xitmuzon.net{url}"
-                        if url:
-                            results.append({"title": title, "artist": artist, "url": url, "source": "xitmuzon", "type": "direct"})
-        except Exception as e:
-            logger.error(f"xitmuzon.net xatolik: {e}")
-    return results
-
-
-async def search_music_uzhits(query):
-    search_url = f"https://uzhits.net/index.php?do=search&subaction=search&story={query}"
-    results = []
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        try:
-            response = await client.get(
-                search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15.0
-            )
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-                for item in soup.find_all("div", class_="track-item"):
-                    title = item.get("data-title")
-                    artist = item.get("data-artist")
-                    url = item.get("data-track")
-                    if title and artist and url:
-                        if url.startswith("/"):
-                            url = f"https://uzhits.net{url}"
-                        results.append({"title": title, "artist": artist, "url": url, "source": "uzhits", "type": "direct"})
-        except Exception as e:
-            logger.error(f"uzhits.net xatolik: {e}")
-    return results
-
-
-async def search_music_youtube(query):
-    """YouTube Music dan musiqa qidirish (yt-dlp orqali) — HAMMA musiqa topiladi"""
+async def search_music_youtube(query, max_results=20):
+    """YouTube dan musiqa qidirish — tez va mukammal"""
     results = []
     try:
         import yt_dlp
+
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': True,
-            'default_search': 'ytsearch15',
+            'default_search': f'ytsearch{max_results}',
             'socket_timeout': 15,
             'extractor_args': {
                 'youtube': {
@@ -179,6 +118,7 @@ async def search_music_youtube(query):
                 },
             },
         }
+
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
 
@@ -191,21 +131,21 @@ async def search_music_youtube(query):
 
         def _search():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                search_results = ydl.extract_info(f"ytsearch15:{query} audio", download=False)
+                search_results = ydl.extract_info(
+                    f"ytsearch{max_results}:{query}", download=False
+                )
                 if search_results and 'entries' in search_results:
                     for entry in search_results['entries']:
                         if entry is None:
                             continue
                         title = entry.get('title', '')
                         uploader = entry.get('uploader', entry.get('channel', ''))
-                        video_url = entry.get('url', '')
                         video_id = entry.get('id', '')
                         duration = entry.get('duration', 0)
 
                         if not title or not video_id:
                             continue
 
-                        # Audio/Music kontentni afzal ko'ramiz
                         results.append({
                             "title": title,
                             "artist": uploader or "YouTube",
@@ -224,44 +164,325 @@ async def search_music_youtube(query):
 
 
 async def search_music(query):
-    """Barcha manbalardan parallel qidirish"""
-    tasks = [
-        search_music_muztv(query),
-        search_music_xitmuzon(query),
-        search_music_uzhits(query),
-        search_music_youtube(query),
-    ]
-    results_list = await asyncio.gather(*tasks, return_exceptions=True)
-
-    all_results = []
-    seen_titles = set()
-
-    # Avval O'zbek saytlar natijalarini qo'shamiz (tezroq yuklanadi)
-    for results in results_list[:3]:
-        if isinstance(results, Exception):
-            logger.error(f"Qidiruv xatosi: {results}")
-            continue
-        for item in results:
-            key = f"{item['artist'].lower().strip()}-{item['title'].lower().strip()}"
-            if key not in seen_titles:
-                seen_titles.add(key)
-                all_results.append(item)
-
-    # Keyin YouTube natijalarini qo'shamiz
-    yt_results = results_list[3] if not isinstance(results_list[3], Exception) else []
-    if isinstance(yt_results, Exception):
-        logger.error(f"YouTube qidiruv xatosi: {yt_results}")
-        yt_results = []
-    for item in yt_results:
-        key = f"{item['artist'].lower().strip()}-{item['title'].lower().strip()}"
-        if key not in seen_titles:
-            seen_titles.add(key)
-            all_results.append(item)
-
-    return all_results
+    """YouTube Music dan qidirish"""
+    results = await search_music_youtube(query, max_results=20)
+    return results
 
 
-# === Xabarni qayta ishlash (musiqa qidirish) ===
+# =====================================================
+# Shazam — ovozli xabar orqali musiqa aniqlash
+# =====================================================
+
+async def recognize_audio_shazam(audio_path: str) -> dict | None:
+    """Shazam orqali audio fayldan musiqa aniqlash"""
+    try:
+        from shazamio import Shazam
+
+        shazam = Shazam()
+        result = await shazam.recognize(audio_path)
+
+        if result and 'track' in result:
+            track = result['track']
+            return {
+                'title': track.get('title', 'Noma\'lum'),
+                'artist': track.get('subtitle', 'Noma\'lum'),
+                'album': track.get('sections', [{}])[0].get('metadata', [{}])[0].get('text', '') if track.get('sections') else '',
+                'cover_url': track.get('images', {}).get('coverarthq', ''),
+                'shazam_url': track.get('url', ''),
+                'genre': track.get('genres', {}).get('primary', ''),
+            }
+    except ImportError:
+        logger.error("shazamio kutubxonasi o'rnatilmagan! pip install shazamio")
+    except Exception as e:
+        logger.error(f"Shazam aniqlash xatosi: {e}", exc_info=True)
+    return None
+
+
+async def extract_audio_from_video(video_path: str) -> str | None:
+    """Video fayldan audio chiqarib olish (ffmpeg orqali)"""
+    try:
+        audio_path = video_path.rsplit('.', 1)[0] + '_audio.ogg'
+        process = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-i', video_path,
+            '-vn',  # videoni olib tashlash
+            '-acodec', 'libopus',
+            '-b:a', '128k',
+            '-t', '30',  # faqat birinchi 30 sekund (Shazam uchun yetarli)
+            '-y',  # overwrite
+            audio_path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await process.wait()
+
+        if process.returncode == 0 and os.path.exists(audio_path):
+            return audio_path
+    except Exception as e:
+        logger.error(f"Audio ajratish xatosi: {e}")
+    return None
+
+
+# =====================================================
+# Ovozli xabar handler — Shazam
+# =====================================================
+
+@dp.message_handler(content_types=[ContentType.VOICE, ContentType.AUDIO, ContentType.VIDEO_NOTE])
+async def handle_voice_shazam(message: types.Message):
+    """Ovozli xabar, audio yoki video_note yuborilganda Shazam orqali aniqlash"""
+    status_msg = await message.reply("🎵 Musiqa aniqlanmoqda...")
+
+    tmp_dir = tempfile.mkdtemp(prefix="shazam_")
+    audio_path = None
+
+    try:
+        # Faylni yuklab olish
+        if message.voice:
+            file_info = await bot.get_file(message.voice.file_id)
+        elif message.audio:
+            file_info = await bot.get_file(message.audio.file_id)
+        elif message.video_note:
+            file_info = await bot.get_file(message.video_note.file_id)
+        else:
+            await status_msg.edit_text("Audio fayl topilmadi.")
+            return
+
+        file_ext = '.ogg'
+        if message.audio and message.audio.file_name:
+            _, ext = os.path.splitext(message.audio.file_name)
+            if ext:
+                file_ext = ext
+
+        audio_path = os.path.join(tmp_dir, f"shazam_input{file_ext}")
+        await bot.download_file(file_info.file_path, destination=audio_path)
+
+        # Shazam orqali aniqlash
+        result = await recognize_audio_shazam(audio_path)
+
+        if result:
+            # Natijani ko'rsatish
+            text_parts = [
+                f"🎵 <b>Musiqa topildi!</b>\n",
+                f"🎤 <b>Ijrochi:</b> {result['artist']}",
+                f"🎶 <b>Nomi:</b> {result['title']}",
+            ]
+            if result.get('album'):
+                text_parts.append(f"💿 <b>Albom:</b> {result['album']}")
+            if result.get('genre'):
+                text_parts.append(f"🏷 <b>Janr:</b> {result['genre']}")
+
+            text = "\n".join(text_parts)
+
+            # YouTube dan qidirish tugmasi
+            search_query = f"{result['artist']} - {result['title']}"
+            markup = InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                InlineKeyboardButton(
+                    text="🔍 YouTube dan qidirish",
+                    callback_data=f"shazam_search:{message.chat.id}"
+                )
+            )
+
+            # Qidiruv uchun saqlash
+            user_results[f"shazam_{message.chat.id}"] = search_query
+
+            # Cover rasmi bilan yuborish
+            if result.get('cover_url'):
+                try:
+                    await status_msg.delete()
+                    await bot.send_photo(
+                        chat_id=message.chat.id,
+                        photo=result['cover_url'],
+                        caption=text,
+                        parse_mode="HTML",
+                        reply_markup=markup,
+                    )
+                    return
+                except Exception:
+                    pass
+
+            await status_msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        else:
+            await status_msg.edit_text(
+                "😔 Musiqa aniqlab bo'lmadi.\n\n"
+                "💡 <b>Maslahat:</b> Musiqani aniqroq yozib yuboring — "
+                "fondan shovqin kam bo'lsa yaxshi natija beradi.",
+                parse_mode="HTML",
+            )
+
+    except Exception as e:
+        logger.error(f"Shazam handler xatosi: {e}", exc_info=True)
+        try:
+            await status_msg.edit_text("⚠️ Musiqa aniqlashda xatolik yuz berdi.")
+        except Exception:
+            pass
+    finally:
+        # Tozalash
+        try:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith("shazam_search:"))
+async def shazam_search_callback(callback: CallbackQuery):
+    """Shazam natijasidan YouTube da qidirish"""
+    chat_id = int(callback.data.split(":")[1])
+    search_query = user_results.pop(f"shazam_{chat_id}", None)
+
+    if not search_query:
+        await callback.answer("Ma'lumot topilmadi. Qayta urinib ko'ring.")
+        return
+
+    await callback.answer("Qidirilmoqda...")
+    await bot.send_chat_action(chat_id, "typing")
+
+    all_results = await search_music(search_query)
+
+    if all_results:
+        user_results[chat_id] = {
+            "results": all_results,
+            "current_page": 1,
+            "query": search_query,
+        }
+        await send_results_page(chat_id)
+    else:
+        await bot.send_message(chat_id, "Hech qanday natija topilmadi.")
+
+
+# =====================================================
+# Video xabar handler — videodagi musiqani aniqlash
+# =====================================================
+
+@dp.message_handler(content_types=[ContentType.VIDEO])
+async def handle_video_shazam(message: types.Message):
+    """Video yuborilganda musiqani aniqlash imkoniyatini taklif qilish"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(
+            text="🎵 Videodagi musiqani aniqlash",
+            callback_data=f"vid_shazam:{message.message_id}:{message.chat.id}",
+        )
+    )
+    await message.reply(
+        "🎬 Video qabul qilindi!\n"
+        "Videodagi musiqani aniqlash uchun tugmani bosing:",
+        reply_markup=markup,
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith("vid_shazam:"))
+async def video_shazam_callback(callback: CallbackQuery):
+    """Yuborilgan videodagi musiqani Shazam orqali aniqlash"""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer("Noto'g'ri ma'lumot.")
+        return
+
+    video_msg_id = int(parts[1])
+    chat_id = int(parts[2])
+
+    await callback.answer("Musiqa aniqlanmoqda...")
+    status_msg = await callback.message.edit_text("🎵 Videodagi musiqa aniqlanmoqda...")
+
+    tmp_dir = tempfile.mkdtemp(prefix="vid_shazam_")
+    video_path = None
+    audio_path = None
+
+    try:
+        # Video xabarini topish
+        # reply_to_message dan video olish
+        reply_msg = callback.message.reply_to_message
+        if not reply_msg or not reply_msg.video:
+            await status_msg.edit_text("⚠️ Video topilmadi. Qayta yuboring.")
+            return
+
+        video = reply_msg.video
+
+        # Fayl hajmi tekshirish (20MB gacha qabul qilamiz Shazam uchun)
+        if video.file_size and video.file_size > 20 * 1024 * 1024:
+            await status_msg.edit_text(
+                "⚠️ Video hajmi juda katta. 20MB gacha bo'lgan video yuboring."
+            )
+            return
+
+        # Video yuklab olish
+        file_info = await bot.get_file(video.file_id)
+        video_path = os.path.join(tmp_dir, "video.mp4")
+        await bot.download_file(file_info.file_path, destination=video_path)
+
+        # Audio ajratish
+        audio_path = await extract_audio_from_video(video_path)
+        if not audio_path:
+            await status_msg.edit_text("⚠️ Videodan audio ajratib bo'lmadi.")
+            return
+
+        # Shazam orqali aniqlash
+        result = await recognize_audio_shazam(audio_path)
+
+        if result:
+            text_parts = [
+                f"🎵 <b>Musiqa topildi!</b>\n",
+                f"🎤 <b>Ijrochi:</b> {result['artist']}",
+                f"🎶 <b>Nomi:</b> {result['title']}",
+            ]
+            if result.get('album'):
+                text_parts.append(f"💿 <b>Albom:</b> {result['album']}")
+            if result.get('genre'):
+                text_parts.append(f"🏷 <b>Janr:</b> {result['genre']}")
+
+            text = "\n".join(text_parts)
+
+            search_query = f"{result['artist']} - {result['title']}"
+            markup = InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                InlineKeyboardButton(
+                    text="🔍 YouTube dan qidirish va yuklash",
+                    callback_data=f"shazam_search:{chat_id}"
+                )
+            )
+            user_results[f"shazam_{chat_id}"] = search_query
+
+            if result.get('cover_url'):
+                try:
+                    await status_msg.delete()
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=result['cover_url'],
+                        caption=text,
+                        parse_mode="HTML",
+                        reply_markup=markup,
+                    )
+                    return
+                except Exception:
+                    pass
+
+            await status_msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        else:
+            await status_msg.edit_text(
+                "😔 Videodagi musiqa aniqlab bo'lmadi.\n\n"
+                "💡 <b>Maslahat:</b> Musiqa toza eshitilishi kerak — "
+                "fondan shovqin kam bo'lsa yaxshi natija beradi.",
+                parse_mode="HTML",
+            )
+
+    except Exception as e:
+        logger.error(f"Video Shazam xatosi: {e}", exc_info=True)
+        try:
+            await status_msg.edit_text("⚠️ Musiqa aniqlashda xatolik yuz berdi.")
+        except Exception:
+            pass
+    finally:
+        try:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+# =====================================================
+# Matn qidiruv handler (YouTube Music)
+# =====================================================
 
 @dp.message_handler()
 async def handle_message(message: types.Message):
@@ -285,6 +506,10 @@ async def handle_message(message: types.Message):
         await message.reply("Hech qanday natija topilmadi. Boshqa kalit so'z bilan urinib ko'ring.")
 
 
+# =====================================================
+# Natijalar sahifasi
+# =====================================================
+
 async def send_results_page(chat_id):
     data = user_results.get(chat_id)
     if not data:
@@ -304,10 +529,7 @@ async def send_results_page(chat_id):
     buttons = []
     for idx, info in enumerate(page_results, start=1):
         result_id = start_index + idx - 1
-        # YouTube natijalar uchun YT belgisi
         label = f"{idx}"
-        if info.get("source") == "youtube":
-            label = f"▶{idx}"
         buttons.append(
             InlineKeyboardButton(text=label, callback_data=f"download:{result_id}:{chat_id}")
         )
@@ -330,15 +552,11 @@ async def send_results_page(chat_id):
     else:
         markup.add(clear_button)
 
-    # Natijalar ro'yxatini chiqarish
     lines = []
     for idx, info in enumerate(page_results, start=1):
-        source_tag = ""
-        if info.get("source") == "youtube":
-            source_tag = " [YT]"
         dur = info.get("duration", 0)
         dur_str = f" ({dur // 60}:{dur % 60:02d})" if dur else ""
-        lines.append(f"{idx}. {info['artist']} - {info['title']}{dur_str}{source_tag}")
+        lines.append(f"{idx}. {info['artist']} - {info['title']}{dur_str}")
 
     total_text = f"Jami: {len(results)} natija"
     response_text = (
@@ -357,6 +575,10 @@ async def send_results_page(chat_id):
     sent_message = await bot.send_message(chat_id, response_text, reply_markup=markup, parse_mode="Markdown")
     user_results[chat_id]["message_id"] = sent_message.message_id
 
+
+# =====================================================
+# Pagination & Clear callback
+# =====================================================
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith("page:"))
 async def pagination_callback_handler(callback_query: CallbackQuery):
@@ -398,6 +620,10 @@ async def clear_callback_handler(callback_query: CallbackQuery):
         await callback_query.answer("Noto'g'ri ma'lumot.")
 
 
+# =====================================================
+# Download callback (YouTube audio yuklab olish)
+# =====================================================
+
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith("download:"))
 async def download_callback_handler(callback_query: CallbackQuery):
     data_parts = callback_query.data.split(":")
@@ -410,9 +636,8 @@ async def download_callback_handler(callback_query: CallbackQuery):
         if user_data and 0 <= result_id < len(user_data["results"]):
             music_info = user_data["results"][result_id]
             url = music_info["url"]
-            source_type = music_info.get("type", "direct")
 
-            # Avval cache tekshirish
+            # Cache tekshirish
             cached = await cache_db.get_file_id_by_url(url)
             if cached:
                 caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
@@ -425,56 +650,15 @@ async def download_callback_handler(callback_query: CallbackQuery):
                 return
 
             await callback_query.answer("Yuklab olinmoqda, biroz kuting...")
-
-            if source_type == "ytdlp":
-                # YouTube dan yt-dlp orqali audio yuklab olish
-                await _download_and_send_ytdlp_audio(callback_query, music_info)
-            else:
-                # To'g'ridan-to'g'ri URL dan yuklab olish
-                await _download_and_send_direct(callback_query, music_info)
+            await _download_and_send_ytdlp_audio(callback_query, music_info)
         else:
             await callback_query.answer("Yuklab olish havolasi topilmadi.")
     else:
         await callback_query.answer("Noto'g'ri ma'lumot.")
 
 
-async def _download_and_send_direct(callback_query, music_info):
-    """O'zbek saytlardan to'g'ridan-to'g'ri mp3 yuklab olish"""
-    url = music_info["url"]
-    async with httpx.AsyncClient(follow_redirects=True, verify=False) as client:
-        try:
-            response = await client.get(
-                url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60.0
-            )
-            if response.status_code == 200:
-                file_data = BytesIO(response.content)
-                file_data.seek(0)
-                file_data.name = f"{music_info['artist']} - {music_info['title']}.mp3"
-
-                caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
-
-                sent_msg = await bot.send_audio(
-                    chat_id=callback_query.message.chat.id,
-                    audio=file_data,
-                    caption=caption,
-                    title=music_info["title"],
-                    performer=music_info["artist"],
-                )
-                # Cache ga saqlash
-                if sent_msg.audio:
-                    await cache_db.add_cache(
-                        music_info["source"], url, sent_msg.audio.file_id, "audio"
-                    )
-            else:
-                await callback_query.message.answer("Qo'shiqni yuklab olishda xatolik yuz berdi.")
-        except Exception as e:
-            logger.error(f"Direct yuklab olish xatosi: {e}")
-            await callback_query.message.answer("Qo'shiqni yuklab olishda xatolik yuz berdi.")
-
-
 async def _download_and_send_ytdlp_audio(callback_query, music_info):
     """YouTube dan yt-dlp orqali audio yuklab olish"""
-    import tempfile
     url = music_info["url"]
     tmp_dir = tempfile.mkdtemp(prefix="ytmusic_")
 
@@ -503,7 +687,6 @@ async def _download_and_send_ytdlp_audio(callback_query, music_info):
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
 
-        # YouTube extractor sozlamalari + bgutil PO token
         ydl_opts['extractor_args'] = {
             'youtube': {
                 'player_client': ['web', 'web_safari', 'android_vr'],
@@ -515,7 +698,7 @@ async def _download_and_send_ytdlp_audio(callback_query, music_info):
         }
 
         try:
-            import curl_cffi
+            import curl_cffi  # noqa: F401
             ydl_opts['impersonate'] = 'chrome'
         except ImportError:
             pass
@@ -526,7 +709,6 @@ async def _download_and_send_ytdlp_audio(callback_query, music_info):
                 if info is None:
                     return None, None
 
-                # mp3 faylni topish
                 file_path = ydl.prepare_filename(info)
                 base, _ = os.path.splitext(file_path)
                 mp3_path = base + '.mp3'
@@ -553,7 +735,7 @@ async def _download_and_send_ytdlp_audio(callback_query, music_info):
         duration = info.get('duration', 0)
         thumbnail_url = info.get('thumbnail', '')
 
-        # Thumbnail yuklab olish
+        # Thumbnail
         thumb_data = None
         if thumbnail_url:
             try:
@@ -602,7 +784,6 @@ async def _download_and_send_ytdlp_audio(callback_query, music_info):
         logger.error(f"YouTube audio yuklab olish xatosi: {e}", exc_info=True)
         await callback_query.message.answer("YouTube dan audio yuklab olishda xatolik yuz berdi.")
     finally:
-        # Vaqtinchalik fayllarni tozalash
         try:
             import shutil
             shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -41,6 +41,9 @@ yt-dlp>=2026.3.3
 curl_cffi>=0.14.0
 bgutil-ytdlp-pot-provider
 
+# Shazam (musiqa aniqlash)
+shazamio>=0.7.0
+
 # Pyrogram (katta fayllar uchun MTProto)
 pyrogram==2.0.106
 tgcrypto==1.2.5

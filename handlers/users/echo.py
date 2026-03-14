@@ -1,7 +1,7 @@
 import logging
 import os
 from aiogram import types
-from aiogram.types import InputFile
+from aiogram.types import InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.markdown import html_decoration as hd
 from loader import dp, bot, cache_db
 from utils.video_downloader import (
@@ -17,6 +17,9 @@ MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB (pyrogram limiti)
 logger = logging.getLogger(__name__)
 
 HTTP_URL_REGEXP = r'^(https?://[^\s]+)$'
+
+# URL dan Shazam uchun vaqtinchalik cache
+_url_shazam_cache = {}
 
 
 def _is_youtube_url(url: str) -> bool:
@@ -312,6 +315,14 @@ async def _send_result(
                     await status_message.delete()
                 except Exception:
                     pass
+                # Musiqani aniqlash tugmasi
+                markup = InlineKeyboardMarkup()
+                markup.add(InlineKeyboardButton(
+                    text="🎵 Musiqani aniqlash",
+                    callback_data=f"url_shazam:{chat_id}",
+                ))
+                _url_shazam_cache[chat_id] = url
+                await bot.send_message(chat_id, "🎶 Videodagi musiqani aniqlash:", reply_markup=markup)
             else:
                 await status_message.edit_text(
                     "⚠️ Katta faylni yuborishda xatolik. Qayta urinib ko'ring."
@@ -339,6 +350,15 @@ async def _send_result(
             await status_message.delete()
         except Exception:
             pass
+
+        # Musiqani aniqlash tugmasi
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(
+            text="🎵 Musiqani aniqlash",
+            callback_data=f"url_shazam:{chat_id}",
+        ))
+        _url_shazam_cache[chat_id] = url
+        await bot.send_message(chat_id, "🎶 Videodagi musiqani aniqlash:", reply_markup=markup)
 
 
 async def send_cached_media(message: types.Message, file_id: str, media_type: str = "document"):
@@ -372,3 +392,112 @@ async def send_cached_media_to_chat(chat_id: int, file_id: str, media_type: str 
             await bot.send_document(chat_id, file_id, caption=caption, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Cache dan yuborishda xatolik: {e}")
+
+
+# =====================================================
+# URL Shazam — yuklangan videodagi musiqani aniqlash
+# =====================================================
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith("url_shazam:"))
+async def url_shazam_callback(callback: types.CallbackQuery):
+    """Yuklangan video URL dan musiqani aniqlash"""
+    import tempfile
+
+    parts = callback.data.split(":")
+    chat_id = int(parts[1])
+    url = _url_shazam_cache.pop(chat_id, None)
+
+    if not url:
+        await callback.answer("Ma'lumot topilmadi. Videoni qayta yuboring.")
+        return
+
+    await callback.answer("Musiqa aniqlanmoqda...")
+    status_msg = await callback.message.edit_text("🎵 Videodagi musiqa aniqlanmoqda...")
+
+    tmp_dir = tempfile.mkdtemp(prefix="url_shazam_")
+
+    try:
+        # Video yuklab olish
+        result = await download_video(url)
+        if not result or not result.get('file_path'):
+            await status_msg.edit_text("⚠️ Videoni qayta yuklab bo'lmadi.")
+            return
+
+        file_path = result['file_path']
+
+        # Audio ajratish
+        from handlers.users.music_search import extract_audio_from_video, recognize_audio_shazam
+        audio_path = await extract_audio_from_video(file_path)
+        cleanup_file(file_path)
+
+        if not audio_path:
+            await status_msg.edit_text("⚠️ Videodan audio ajratib bo'lmadi.")
+            return
+
+        # Shazam
+        shazam_result = await recognize_audio_shazam(audio_path)
+
+        # Audio tozalash
+        try:
+            os.remove(audio_path)
+        except Exception:
+            pass
+
+        if shazam_result:
+            text_parts = [
+                f"🎵 <b>Musiqa topildi!</b>\n",
+                f"🎤 <b>Ijrochi:</b> {shazam_result['artist']}",
+                f"🎶 <b>Nomi:</b> {shazam_result['title']}",
+            ]
+            if shazam_result.get('album'):
+                text_parts.append(f"💿 <b>Albom:</b> {shazam_result['album']}")
+            if shazam_result.get('genre'):
+                text_parts.append(f"🏷 <b>Janr:</b> {shazam_result['genre']}")
+
+            text = "\n".join(text_parts)
+
+            search_query = f"{shazam_result['artist']} - {shazam_result['title']}"
+
+            # YouTube dan qidirish tugmasi
+            from handlers.users.music_search import user_results as music_user_results
+            markup = InlineKeyboardMarkup(row_width=1)
+            markup.add(InlineKeyboardButton(
+                text="🔍 YouTube dan qidirish va yuklash",
+                callback_data=f"shazam_search:{chat_id}",
+            ))
+            music_user_results[f"shazam_{chat_id}"] = search_query
+
+            if shazam_result.get('cover_url'):
+                try:
+                    await status_msg.delete()
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=shazam_result['cover_url'],
+                        caption=text,
+                        parse_mode="HTML",
+                        reply_markup=markup,
+                    )
+                    return
+                except Exception:
+                    pass
+
+            await status_msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        else:
+            await status_msg.edit_text(
+                "😔 Videodagi musiqa aniqlab bo'lmadi.\n\n"
+                "💡 <b>Maslahat:</b> Musiqa toza eshitilishi kerak.",
+                parse_mode="HTML",
+            )
+
+    except Exception as e:
+        logger.error(f"URL Shazam xatosi: {e}", exc_info=True)
+        try:
+            await status_msg.edit_text("⚠️ Musiqa aniqlashda xatolik yuz berdi.")
+        except Exception:
+            pass
+    finally:
+        try:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
