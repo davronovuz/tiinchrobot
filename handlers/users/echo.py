@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from aiogram import types
@@ -18,12 +19,8 @@ logger = logging.getLogger(__name__)
 
 HTTP_URL_REGEXP = r'^(https?://[^\s]+)$'
 
-# URL dan Shazam uchun vaqtinchalik cache
-_url_shazam_cache = {}
-
 
 def _is_youtube_url(url: str) -> bool:
-    """YouTube URL ekanligini tekshirish"""
     lower = url.lower()
     return any(k in lower for k in ("youtube.com", "youtu.be", "music.youtube.com"))
 
@@ -44,7 +41,6 @@ async def handle_media_request(message: types.Message):
     user_id = message.from_user.id
     logger.info(f"User: {user_id}, URL: {url}, Platform: {platform}")
 
-    # Statistika
     try:
         await cache_db.increment_request_count(platform)
     except Exception as e:
@@ -61,19 +57,17 @@ async def handle_media_request(message: types.Message):
         await _handle_youtube_quality_selection(message, url, platform)
         return
 
-    # Boshqa platformalar — to'g'ridan-to'g'ri yuklash
+    # Boshqa platformalar
     await _download_and_send(message, url, platform)
 
 
 async def _handle_youtube_quality_selection(message: types.Message, url: str, platform: str):
-    """YouTube uchun sifat tanlash inline klaviatura ko'rsatish"""
     loading_msg = await message.reply("🔍 YouTube video formatlarini tekshirilmoqda...")
 
     try:
         formats_data = await get_youtube_formats(url)
 
         if not formats_data or not formats_data.get("formats"):
-            # Format olib bo'lmasa, to'g'ridan-to'g'ri eng yaxshi sifatda yuklash
             await loading_msg.edit_text(f"📥 {platform} dan yuklanmoqda...")
             await _download_and_send(message, url, platform, loading_msg)
             return
@@ -83,7 +77,6 @@ async def _handle_youtube_quality_selection(message: types.Message, url: str, pl
         formats = formats_data["formats"]
         duration = formats_data.get("duration", 0)
 
-        # Duration formatlash
         dur_text = ""
         if duration:
             mins, secs = divmod(int(duration), 60)
@@ -94,45 +87,31 @@ async def _handle_youtube_quality_selection(message: types.Message, url: str, pl
                 dur_text = f"⏱ {mins}:{secs:02d}"
 
         kb = youtube_quality_keyboard(url_hash, formats)
-
-        text = (
-            f"🎬 <b>{title}</b>\n"
-            f"{dur_text}\n\n"
-            f"📐 Sifatni tanlang:"
-        )
-
+        text = f"🎬 <b>{title}</b>\n{dur_text}\n\n📐 Sifatni tanlang:"
         await loading_msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"YouTube format tanlash xatosi: {e}", exc_info=True)
-        # Xatolik bo'lsa to'g'ridan-to'g'ri yuklash
         await loading_msg.edit_text(f"📥 {platform} dan yuklanmoqda...")
         await _download_and_send(message, url, platform, loading_msg)
 
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith("ytq:"))
 async def handle_youtube_quality_callback(callback: types.CallbackQuery):
-    """YouTube sifat tanlash callback handler"""
     await callback.answer()
 
     parts = callback.data.split(":")
     if len(parts) != 3:
-        await callback.message.edit_text("⚠️ Noto'g'ri format. Iltimos qayta urinib ko'ring.")
+        await callback.message.edit_text("⚠️ Noto'g'ri format.")
         return
 
     _, url_hash, format_id = parts
-
-    # URL ni cache dan olish
     url = get_cached_yt_url(url_hash)
     if not url:
-        await callback.message.edit_text(
-            "⏳ Havola muddati tugagan. Iltimos, havolani qayta yuboring."
-        )
+        await callback.message.edit_text("⏳ Havola muddati tugagan. Qayta yuboring.")
         return
 
     platform = "YouTube"
-
-    # Cache tekshirish (format tanlash paytida boshqa foydalanuvchi yuklagan bo'lishi mumkin)
     cached = await cache_db.get_file_id_by_url(url)
     if cached and format_id != "audio":
         try:
@@ -144,11 +123,9 @@ async def handle_youtube_quality_callback(callback: types.CallbackQuery):
         )
         return
 
-    # Yuklab olish boshlash
     if format_id == "audio":
         await callback.message.edit_text("🎵 Audio yuklanmoqda...")
     else:
-        quality_label = format_id.split("+")[0] if "+" in format_id else format_id
         await callback.message.edit_text(f"📥 YouTube dan yuklanmoqda...")
 
     downloading_msg = callback.message
@@ -156,21 +133,14 @@ async def handle_youtube_quality_callback(callback: types.CallbackQuery):
 
     try:
         result = await download_youtube_with_format(url_hash, format_id)
-
         if not result or not result.get('file_path'):
-            # Fallback — oddiy download
             result = await download_video(url)
-
         if not result or not result.get('file_path'):
-            await downloading_msg.edit_text(
-                "⛔ Video yuklab olib bo'lmadi.\n"
-                "Iltimos, qayta urinib ko'ring."
-            )
+            await downloading_msg.edit_text("⛔ Yuklab olib bo'lmadi. Qayta urinib ko'ring.")
             return
 
         file_path = result['file_path']
         is_audio = result.get('is_audio', False)
-
         await _send_result(downloading_msg, result, url, platform, is_audio=is_audio)
 
     except Exception as e:
@@ -188,9 +158,8 @@ async def _download_and_send(
     message: types.Message, url: str, platform: str,
     downloading_message: types.Message = None
 ):
-    """Boshqa platformalar uchun to'g'ridan-to'g'ri yuklab yuborish"""
     if not downloading_message:
-        downloading_message = await message.reply(f"📥 {platform} dan yuklanmoqda, iltimos kuting...")
+        downloading_message = await message.reply(f"📥 {platform} dan yuklanmoqda...")
 
     file_path = None
     try:
@@ -205,9 +174,7 @@ async def _download_and_send(
 
         file_path = result['file_path']
         is_audio = result.get('is_audio', False)
-        is_photo = result.get('is_photo', False)
-        await _send_result(downloading_message, result, url, platform,
-                           is_audio=is_audio)
+        await _send_result(downloading_message, result, url, platform, is_audio=is_audio)
 
     except Exception as e:
         logger.error(f"Video yuklab olish xatosi: {e}", exc_info=True)
@@ -220,11 +187,117 @@ async def _download_and_send(
             cleanup_file(file_path)
 
 
+async def _auto_shazam_video(chat_id: int, file_path: str):
+    """Video fayldan avtomatik musiqa aniqlash (background)"""
+    try:
+        import shutil as _shutil
+        import tempfile as _tempfile
+        from handlers.users.music_search import (
+            extract_audio_from_video, recognize_audio_shazam,
+            search_music_youtube, user_results,
+        )
+
+        # Fayl nusxasini olish (asl fayl tez o'chirilishi mumkin)
+        if not os.path.exists(file_path):
+            return
+        tmp_dir = _tempfile.mkdtemp(prefix="auto_shazam_")
+        _, ext = os.path.splitext(file_path)
+        copy_path = os.path.join(tmp_dir, f"video{ext}")
+        try:
+            _shutil.copy2(file_path, copy_path)
+        except Exception:
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+            return
+
+        audio_path = await extract_audio_from_video(copy_path)
+        # Nusxani tozalash
+        try:
+            os.remove(copy_path)
+        except Exception:
+            pass
+        if not audio_path:
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+            return
+
+        result = await recognize_audio_shazam(audio_path)
+
+        # Audio tozalash
+        try:
+            os.remove(audio_path)
+        except Exception:
+            pass
+
+        if not result or not result.get('title'):
+            return
+
+        # Natija matni
+        text_parts = [
+            "🎵 Videodagi musiqa aniqlandi!\n",
+            f"🎤 Ijrochi: {result['artist']}",
+            f"🎶 Nomi: {result['title']}",
+        ]
+        if result.get('album'):
+            text_parts.append(f"💿 Albom: {result['album']}")
+        if result.get('genre'):
+            text_parts.append(f"🏷 Janr: {result['genre']}")
+
+        text = "\n".join(text_parts)
+
+        # YouTube dan birinchi natijani topish
+        search_query = f"{result['artist']} {result['title']}"
+        yt_results = await search_music_youtube(search_query, max_results=3)
+
+        if yt_results:
+            # Yuklash tugmasi
+            shazam_key = f"shazam_dl_{chat_id}"
+            user_results[shazam_key] = {
+                'url': yt_results[0]['url'],
+                'title': result['title'],
+                'artist': result['artist'],
+            }
+
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton(
+                text="🎵 Yuklash",
+                callback_data=f"shazam_dl:{chat_id}",
+            ))
+
+            if result.get('cover_url'):
+                try:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=result['cover_url'],
+                        caption=text,
+                        reply_markup=markup,
+                    )
+                    return
+                except Exception:
+                    pass
+
+            await bot.send_message(chat_id, text, reply_markup=markup)
+        else:
+            # YouTube da topilmasa faqat info ko'rsatish
+            if result.get('cover_url'):
+                try:
+                    await bot.send_photo(chat_id=chat_id, photo=result['cover_url'], caption=text)
+                    return
+                except Exception:
+                    pass
+            await bot.send_message(chat_id, text)
+
+    except Exception as e:
+        logger.error(f"Auto Shazam xatosi: {e}", exc_info=True)
+    finally:
+        try:
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 async def _send_result(
     status_message: types.Message, result: dict, url: str,
     platform: str, is_audio: bool = False
 ):
-    """Natijani foydalanuvchiga yuborish (video, audio yoki rasm)"""
     file_path = result['file_path']
     file_size = result['filesize']
     title = result.get('title', 'Video')
@@ -238,8 +311,7 @@ async def _send_result(
 
     if file_size > MAX_FILE_SIZE:
         await status_message.edit_text(
-            f"⛔ Fayl hajmi juda katta (>{MAX_FILE_SIZE // (1024*1024*1024)}GB). "
-            f"Telegram limiti tufayli yuborib bo'lmaydi."
+            f"⛔ Fayl hajmi juda katta (>{MAX_FILE_SIZE // (1024*1024*1024)}GB)."
         )
         return
 
@@ -247,10 +319,8 @@ async def _send_result(
     if is_photo:
         input_file = InputFile(file_path)
         sent_msg = await bot.send_photo(
-            chat_id=chat_id,
-            photo=input_file,
-            caption=caption,
-            parse_mode="HTML",
+            chat_id=chat_id, photo=input_file,
+            caption=caption, parse_mode="HTML",
         )
         if sent_msg.photo:
             await cache_db.add_cache(platform, url, sent_msg.photo[-1].file_id, "photo")
@@ -261,16 +331,12 @@ async def _send_result(
         return
 
     if is_audio:
-        # Audio yuborish
         if file_size > FILE_SIZE_LIMIT and pyro_client:
             size_mb = file_size // (1024 * 1024)
             await status_message.edit_text(f"📤 Audio yuborilmoqda ({size_mb}MB)...")
             msg = await pyro_client.send_audio(
-                chat_id=chat_id,
-                audio=file_path,
-                caption=caption,
-                duration=duration,
-                title=title,
+                chat_id=chat_id, audio=file_path,
+                caption=caption, duration=duration, title=title,
             )
             if msg and msg.audio:
                 await cache_db.add_cache(platform, url, msg.audio.file_id, "audio")
@@ -281,12 +347,9 @@ async def _send_result(
         else:
             input_file = InputFile(file_path)
             sent_msg = await bot.send_audio(
-                chat_id=chat_id,
-                audio=input_file,
-                caption=caption,
-                parse_mode="HTML",
-                duration=duration,
-                title=title,
+                chat_id=chat_id, audio=input_file,
+                caption=caption, parse_mode="HTML",
+                duration=duration, title=title,
             )
             if sent_msg.audio:
                 await cache_db.add_cache(platform, url, sent_msg.audio.file_id, "audio")
@@ -302,12 +365,9 @@ async def _send_result(
             size_mb = file_size // (1024 * 1024)
             await status_message.edit_text(f"📤 Katta fayl yuborilmoqda ({size_mb}MB)...")
             file_id = await send_large_video(
-                chat_id=chat_id,
-                file_path=file_path,
-                caption=caption,
-                duration=duration,
-                width=width,
-                height=height,
+                chat_id=chat_id, file_path=file_path,
+                caption=caption, duration=duration,
+                width=width, height=height,
             )
             if file_id:
                 await cache_db.add_cache(platform, url, file_id, "video")
@@ -315,33 +375,18 @@ async def _send_result(
                     await status_message.delete()
                 except Exception:
                     pass
-                # Musiqani aniqlash tugmasi
-                markup = InlineKeyboardMarkup()
-                markup.add(InlineKeyboardButton(
-                    text="🎵 Musiqani aniqlash",
-                    callback_data=f"url_shazam:{chat_id}",
-                ))
-                _url_shazam_cache[chat_id] = url
-                await bot.send_message(chat_id, "🎶 Videodagi musiqani aniqlash:", reply_markup=markup)
             else:
-                await status_message.edit_text(
-                    "⚠️ Katta faylni yuborishda xatolik. Qayta urinib ko'ring."
-                )
+                await status_message.edit_text("⚠️ Katta faylni yuborishda xatolik.")
         else:
             await status_message.edit_text(
-                f"📎 Video hajmi katta ({file_size // (1024*1024)}MB). "
-                f"Hozircha katta fayllarni yuborish imkoni yo'q."
+                f"📎 Video hajmi katta ({file_size // (1024*1024)}MB)."
             )
     else:
         input_file = InputFile(file_path)
         sent_msg = await bot.send_video(
-            chat_id=chat_id,
-            video=input_file,
-            caption=caption,
-            parse_mode="HTML",
-            duration=duration,
-            width=width,
-            height=height,
+            chat_id=chat_id, video=input_file,
+            caption=caption, parse_mode="HTML",
+            duration=duration, width=width, height=height,
             supports_streaming=True,
         )
         if sent_msg.video:
@@ -351,14 +396,9 @@ async def _send_result(
         except Exception:
             pass
 
-        # Musiqani aniqlash tugmasi
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(
-            text="🎵 Musiqani aniqlash",
-            callback_data=f"url_shazam:{chat_id}",
-        ))
-        _url_shazam_cache[chat_id] = url
-        await bot.send_message(chat_id, "🎶 Videodagi musiqani aniqlash:", reply_markup=markup)
+    # Video yuborilgandan keyin avtomatik Shazam (background)
+    if not is_audio and not is_photo and os.path.exists(file_path):
+        asyncio.create_task(_auto_shazam_video(chat_id, file_path))
 
 
 async def send_cached_media(message: types.Message, file_id: str, media_type: str = "document"):
@@ -379,7 +419,6 @@ async def send_cached_media(message: types.Message, file_id: str, media_type: st
 
 
 async def send_cached_media_to_chat(chat_id: int, file_id: str, media_type: str = "document"):
-    """Chat ID bo'yicha cache dan media yuborish"""
     caption = f"✨ {hd.bold('@tinchrobot')} – Tinchlikni xohlovchilar uchun!"
     try:
         if media_type == "video":
@@ -392,112 +431,3 @@ async def send_cached_media_to_chat(chat_id: int, file_id: str, media_type: str 
             await bot.send_document(chat_id, file_id, caption=caption, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Cache dan yuborishda xatolik: {e}")
-
-
-# =====================================================
-# URL Shazam — yuklangan videodagi musiqani aniqlash
-# =====================================================
-
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith("url_shazam:"))
-async def url_shazam_callback(callback: types.CallbackQuery):
-    """Yuklangan video URL dan musiqani aniqlash"""
-    import tempfile
-
-    parts = callback.data.split(":")
-    chat_id = int(parts[1])
-    url = _url_shazam_cache.pop(chat_id, None)
-
-    if not url:
-        await callback.answer("Ma'lumot topilmadi. Videoni qayta yuboring.")
-        return
-
-    await callback.answer("Musiqa aniqlanmoqda...")
-    status_msg = await callback.message.edit_text("🎵 Videodagi musiqa aniqlanmoqda...")
-
-    tmp_dir = tempfile.mkdtemp(prefix="url_shazam_")
-
-    try:
-        # Video yuklab olish
-        result = await download_video(url)
-        if not result or not result.get('file_path'):
-            await status_msg.edit_text("⚠️ Videoni qayta yuklab bo'lmadi.")
-            return
-
-        file_path = result['file_path']
-
-        # Audio ajratish
-        from handlers.users.music_search import extract_audio_from_video, recognize_audio_shazam
-        audio_path = await extract_audio_from_video(file_path)
-        cleanup_file(file_path)
-
-        if not audio_path:
-            await status_msg.edit_text("⚠️ Videodan audio ajratib bo'lmadi.")
-            return
-
-        # Shazam
-        shazam_result = await recognize_audio_shazam(audio_path)
-
-        # Audio tozalash
-        try:
-            os.remove(audio_path)
-        except Exception:
-            pass
-
-        if shazam_result:
-            text_parts = [
-                f"🎵 <b>Musiqa topildi!</b>\n",
-                f"🎤 <b>Ijrochi:</b> {shazam_result['artist']}",
-                f"🎶 <b>Nomi:</b> {shazam_result['title']}",
-            ]
-            if shazam_result.get('album'):
-                text_parts.append(f"💿 <b>Albom:</b> {shazam_result['album']}")
-            if shazam_result.get('genre'):
-                text_parts.append(f"🏷 <b>Janr:</b> {shazam_result['genre']}")
-
-            text = "\n".join(text_parts)
-
-            search_query = f"{shazam_result['artist']} - {shazam_result['title']}"
-
-            # YouTube dan qidirish tugmasi
-            from handlers.users.music_search import user_results as music_user_results
-            markup = InlineKeyboardMarkup(row_width=1)
-            markup.add(InlineKeyboardButton(
-                text="🔍 YouTube dan qidirish va yuklash",
-                callback_data=f"shazam_search:{chat_id}",
-            ))
-            music_user_results[f"shazam_{chat_id}"] = search_query
-
-            if shazam_result.get('cover_url'):
-                try:
-                    await status_msg.delete()
-                    await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=shazam_result['cover_url'],
-                        caption=text,
-                        parse_mode="HTML",
-                        reply_markup=markup,
-                    )
-                    return
-                except Exception:
-                    pass
-
-            await status_msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
-        else:
-            await status_msg.edit_text(
-                "😔 Videodagi musiqa aniqlab bo'lmadi.\n\n"
-                "💡 <b>Maslahat:</b> Musiqa toza eshitilishi kerak.",
-                parse_mode="HTML",
-            )
-
-    except Exception as e:
-        logger.error(f"URL Shazam xatosi: {e}", exc_info=True)
-        try:
-            await status_msg.edit_text("⚠️ Musiqa aniqlashda xatolik yuz berdi.")
-        except Exception:
-            pass
-    finally:
-        try:
-            import shutil
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
