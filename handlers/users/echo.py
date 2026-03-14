@@ -188,35 +188,25 @@ async def _download_and_send(
 
 
 async def _auto_shazam_video(chat_id: int, file_path: str):
-    """Video fayldan avtomatik musiqa aniqlash (background)"""
+    """Video fayldan avtomatik musiqa aniqlash (background). file_path = nusxalangan fayl"""
+    import shutil as _shutil
+    tmp_dir = os.path.dirname(file_path)
     try:
-        import shutil as _shutil
-        import tempfile as _tempfile
         from handlers.users.music_search import (
             extract_audio_from_video, recognize_audio_shazam,
             search_music_youtube, user_results,
         )
 
-        # Fayl nusxasini olish (asl fayl tez o'chirilishi mumkin)
         if not os.path.exists(file_path):
             return
-        tmp_dir = _tempfile.mkdtemp(prefix="auto_shazam_")
-        _, ext = os.path.splitext(file_path)
-        copy_path = os.path.join(tmp_dir, f"video{ext}")
-        try:
-            _shutil.copy2(file_path, copy_path)
-        except Exception:
-            _shutil.rmtree(tmp_dir, ignore_errors=True)
-            return
 
-        audio_path = await extract_audio_from_video(copy_path)
-        # Nusxani tozalash
+        audio_path = await extract_audio_from_video(file_path)
+        # Video nusxani tozalash
         try:
-            os.remove(copy_path)
+            os.remove(file_path)
         except Exception:
             pass
         if not audio_path:
-            _shutil.rmtree(tmp_dir, ignore_errors=True)
             return
 
         result = await recognize_audio_shazam(audio_path)
@@ -397,8 +387,18 @@ async def _send_result(
             pass
 
     # Video yuborilgandan keyin avtomatik Shazam (background)
+    # Faylni nusxalash kerak — asl fayl tez o'chiriladi
     if not is_audio and not is_photo and os.path.exists(file_path):
-        asyncio.create_task(_auto_shazam_video(chat_id, file_path))
+        import tempfile as _tf
+        import shutil as _sh
+        tmp_dir = _tf.mkdtemp(prefix="auto_shazam_copy_")
+        _, ext = os.path.splitext(file_path)
+        copy_path = os.path.join(tmp_dir, f"video{ext}")
+        try:
+            _sh.copy2(file_path, copy_path)
+            asyncio.create_task(_auto_shazam_video(chat_id, copy_path))
+        except Exception:
+            _sh.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def send_cached_media(message: types.Message, file_id: str, media_type: str = "document"):

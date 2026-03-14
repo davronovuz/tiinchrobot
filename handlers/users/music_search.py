@@ -156,8 +156,9 @@ def _get_ydl_opts_download(tmp_dir):
         opts['cookiefile'] = COOKIES_FILE
     try:
         import curl_cffi  # noqa: F401
-        opts['impersonate'] = 'chrome'
-    except ImportError:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        opts['impersonate'] = ImpersonateTarget('chrome', '131', 'macos', '14')
+    except (ImportError, Exception):
         pass
     return opts
 
