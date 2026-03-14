@@ -16,7 +16,6 @@ download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 TEMP_DIR = tempfile.mkdtemp(prefix="tiinchbot_")
 
 # YouTube URL va format ma'lumotlarini vaqtincha saqlash
-# {url_hash: {"url": "...", "formats": [...], "timestamp": ...}}
 _yt_format_cache = {}
 
 # Cobalt API (Docker ichida ishlaydi)
@@ -62,18 +61,33 @@ def is_supported_url(url: str) -> bool:
     return any(keyword in lower_url for keyword in SUPPORTED_PLATFORMS)
 
 
+def _yt_base_opts() -> dict:
+    """YouTube uchun umumiy yt-dlp opsiyalari — android_vr + bgutil, cookiessiz"""
+    return {
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android_vr'],
+                'player_skip': [],
+            },
+            'youtubepot-bgutilhttp': {
+                'base_url': [BGUTIL_URL],
+            },
+        },
+    }
+
+
 async def download_video(url: str) -> dict:
     """
     Video yuklab olish — production fallback tizim:
-    1. Cobalt API (PO token + WARP proxy — YouTube, Instagram, TikTok, Twitter)
-    2. Platformaga xos API (TikTok - tikwm, Instagram - saveig/fastdl)
-    3. yt-dlp + bgutil PO token (universal fallback)
+    1. Cobalt API
+    2. Platformaga xos API
+    3. yt-dlp + bgutil PO token
     """
     async with download_semaphore:
         platform = get_platform_from_url(url)
         start_time = time.monotonic()
 
-        # 1. Cobalt API — asosiy (WARP proxy + PO token + cookies)
+        # 1. Cobalt API
         result = await _download_cobalt(url)
         if result:
             elapsed = time.monotonic() - start_time
@@ -90,7 +104,6 @@ async def download_video(url: str) -> dict:
                 return result
 
         if platform == "Instagram":
-            # Stories uchun maxsus handler
             if "/stories/" in url:
                 result = await _download_instagram_stories(url)
                 if result:
@@ -102,7 +115,7 @@ async def download_video(url: str) -> dict:
                     logger.info(f"[Instagram API] yuklandi")
                     return result
 
-        # 3. yt-dlp + bgutil PO token — universal fallback
+        # 3. yt-dlp + bgutil PO token
         try:
             result = await asyncio.get_event_loop().run_in_executor(
                 None, _download_with_ytdlp, url
@@ -120,11 +133,6 @@ async def download_video(url: str) -> dict:
 
 
 async def _download_cobalt(url: str) -> dict:
-    """
-    Cobalt API v10 orqali video yuklab olish.
-    YouTube: PO token (YOUTUBE_GENERATE_PO_TOKENS=1) + WARP proxy
-    Instagram: cookies.json dan session
-    """
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             resp = await client.post(
@@ -153,7 +161,6 @@ async def _download_cobalt(url: str) -> dict:
                 logger.warning(f"[Cobalt] error: {error_info.get('code', 'unknown')}")
                 return None
 
-            # Video URL ni olish
             download_url = None
             if status in ("tunnel", "redirect"):
                 download_url = data.get("url")
@@ -166,7 +173,6 @@ async def _download_cobalt(url: str) -> dict:
                 logger.warning(f"[Cobalt] URL topilmadi, status={status}")
                 return None
 
-            # Streaming yuklab olish (katta fayllar uchun xotirani tejash)
             platform = get_platform_from_url(url)
             file_path = os.path.join(TEMP_DIR, f"cobalt_{hash(url) & 0xFFFFFFFF}.mp4")
 
@@ -176,9 +182,7 @@ async def _download_cobalt(url: str) -> dict:
                 timeout=600,
             ) as stream:
                 if stream.status_code != 200:
-                    logger.error(f"[Cobalt] fayl yuklab olish: HTTP {stream.status_code}")
                     return None
-
                 with open(file_path, "wb") as f:
                     async for chunk in stream.aiter_bytes(chunk_size=65536):
                         f.write(chunk)
@@ -201,17 +205,14 @@ async def _download_cobalt(url: str) -> dict:
 
     except httpx.ConnectError:
         logger.warning("[Cobalt] server ishlamayapti")
-        return None
     except httpx.TimeoutException:
         logger.warning("[Cobalt] timeout")
-        return None
     except Exception as e:
         logger.error(f"[Cobalt] xatolik: {e}")
-        return None
+    return None
 
 
 async def _download_tiktok(url: str) -> dict:
-    """TikTok — tikwm.com API (watermark siz, HD)"""
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             resp = await client.get(
@@ -259,33 +260,9 @@ async def _download_tiktok(url: str) -> dict:
     return None
 
 
-async def _download_instagram_api(url: str) -> dict:
-    """Instagram — Instagram v1 API orqali yuklab olish (sessionid cookies bilan)"""
-    # URL dan shortcode olish
-    shortcode = _extract_instagram_shortcode(url)
-    if not shortcode:
-        return None
-
-    result = await _try_instagram_v1_api(shortcode, url)
-    if result:
-        return result
-    return None
-
-
-def _extract_instagram_shortcode(url: str) -> str:
-    """Instagram URL dan shortcode olish"""
-    patterns = [
-        r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)",
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, url)
-        if m:
-            return m.group(1)
-    return None
-
+# ==================== Instagram ====================
 
 def _get_instagram_cookies() -> dict:
-    """cookies.txt dan Instagram cookies ni dict sifatida olish"""
     cookies = {}
     if not os.path.exists(COOKIES_FILE):
         return cookies
@@ -302,8 +279,23 @@ def _get_instagram_cookies() -> dict:
     return cookies
 
 
+def _extract_instagram_shortcode(url: str) -> str:
+    patterns = [r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)"]
+    for pattern in patterns:
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+async def _download_instagram_api(url: str) -> dict:
+    shortcode = _extract_instagram_shortcode(url)
+    if not shortcode:
+        return None
+    return await _try_instagram_v1_api(shortcode, url)
+
+
 async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
-    """Instagram v1 API — sessionid bilan media ma'lumotlarini olish"""
     cookies = _get_instagram_cookies()
     if not cookies.get("sessionid"):
         logger.warning("[Instagram v1] sessionid yo'q")
@@ -311,7 +303,6 @@ async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
 
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, cookies=cookies) as client:
-            # v1 API - media info
             resp = await client.get(
                 f"https://i.instagram.com/api/v1/media/{shortcode}/info/",
                 headers={
@@ -330,7 +321,6 @@ async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
                 return None
 
             item = items[0]
-            media_type = item.get("media_type")
 
             # Video
             video_versions = item.get("video_versions", [])
@@ -339,14 +329,13 @@ async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
                 if video_url:
                     return await _stream_download(video_url, "Instagram", original_url)
 
-            # Carousel (bir nechta rasm/video)
+            # Carousel
             carousel = item.get("carousel_media", [])
             if carousel:
                 for cm in carousel:
                     vv = cm.get("video_versions", [])
                     if vv:
                         return await _stream_download(vv[0]["url"], "Instagram", original_url)
-                # Agar hammasi rasm bo'lsa, birinchi rasmni yuklash
                 img = carousel[0].get("image_versions2", {}).get("candidates", [])
                 if img:
                     return await _stream_download(img[0]["url"], "Instagram", original_url)
@@ -362,19 +351,16 @@ async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
 
 
 async def _download_instagram_stories(url: str) -> dict:
-    """Instagram Stories yuklab olish — v1 API orqali"""
     cookies = _get_instagram_cookies()
     if not cookies.get("sessionid"):
         logger.warning("[Stories] sessionid yo'q")
         return None
 
-    # URL dan username olish
     m = re.search(r"instagram\.com/stories/([^/?]+)", url)
     if not m:
         return None
     username = m.group(1)
 
-    # URL da story ID bormi?
     story_id_match = re.search(r"instagram\.com/stories/[^/]+/(\d+)", url)
     target_story_id = story_id_match.group(1) if story_id_match else None
 
@@ -385,7 +371,7 @@ async def _download_instagram_stories(url: str) -> dict:
 
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, cookies=cookies) as client:
-            # 1. Username dan user_id olish
+            # 1. Username -> user_id
             resp = await client.get(
                 f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
                 headers=ig_headers,
@@ -417,15 +403,12 @@ async def _download_instagram_stories(url: str) -> dict:
                 logger.info(f"[Stories] {username} da stories yo'q")
                 return None
 
-            # Agar aniq story_id berilgan bo'lsa, shuni topamiz
             if target_story_id:
                 for item in story_items:
                     if str(item.get("pk")) == target_story_id or str(item.get("id", "")).startswith(target_story_id):
                         return await _download_story_item(item, url)
-                # Topilmasa birinchisini olish
-                logger.info(f"[Stories] story_id {target_story_id} topilmadi, oxirgi story yuklanadi")
 
-            # Eng oxirgi story ni yuklash
+            # Eng oxirgi story
             item = story_items[-1]
             return await _download_story_item(item, url)
 
@@ -435,9 +418,6 @@ async def _download_instagram_stories(url: str) -> dict:
 
 
 async def _download_story_item(item: dict, original_url: str) -> dict:
-    """Bitta story itemni yuklab olish"""
-    media_type = item.get("media_type")
-
     # Video story
     video_versions = item.get("video_versions", [])
     if video_versions:
@@ -450,13 +430,10 @@ async def _download_story_item(item: dict, original_url: str) -> dict:
     if img_versions:
         img_url = img_versions[0].get("url")
         if img_url:
-            # Rasmni yuklab olish
             file_path = os.path.join(TEMP_DIR, f"story_{hash(original_url) & 0xFFFFFFFF}.jpg")
             try:
                 async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-                    async with client.stream("GET", img_url, headers={
-                        "User-Agent": "Mozilla/5.0"
-                    }) as stream:
+                    async with client.stream("GET", img_url, headers={"User-Agent": "Mozilla/5.0"}) as stream:
                         if stream.status_code != 200:
                             return None
                         with open(file_path, "wb") as f:
@@ -485,16 +462,13 @@ async def _download_story_item(item: dict, original_url: str) -> dict:
 
 
 async def _stream_download(download_url: str, platform: str, original_url: str) -> dict:
-    """URL dan faylni streaming yuklab olish"""
     try:
         file_path = os.path.join(TEMP_DIR, f"{platform.lower()}_{hash(original_url) & 0xFFFFFFFF}.mp4")
 
         async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
             async with client.stream(
                 "GET", download_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                },
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
             ) as stream:
                 if stream.status_code != 200:
                     return None
@@ -522,11 +496,9 @@ async def _stream_download(download_url: str, platform: str, original_url: str) 
     return None
 
 
+# ==================== yt-dlp universal fallback ====================
+
 def _download_with_ytdlp(url: str) -> dict:
-    """
-    yt-dlp + bgutil PO token provider — universal fallback.
-    bgutil plugin avtomatik PO token generatsiya qiladi (cookies kerak emas).
-    """
     import yt_dlp
     output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
     platform = get_platform_from_url(url)
@@ -552,22 +524,13 @@ def _download_with_ytdlp(url: str) -> dict:
         }],
     }
 
-    # YouTube: bgutil PO token + to'g'ri player_client
     if platform == "YouTube":
-        ydl_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['web'],
-                'player_skip': [],
-            },
-            # bgutil PO token provider — avtomatik token (Docker: http://bgutil:4416)
-            'youtubepot-bgutilhttp': {
-                'base_url': [BGUTIL_URL],
-            },
-        }
-
-    # Cookies (YouTube login + Instagram sessionid)
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
+        ydl_opts.update(_yt_base_opts())
+        # YouTube uchun cookies ISHLATMAYMIZ — android_vr + bgutil PO token yetarli
+    else:
+        # Instagram va boshqalar uchun cookies
+        if os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -623,12 +586,10 @@ def cleanup_temp_dir():
 # ==================== YouTube Format/Sifat tanlash ====================
 
 def make_url_hash(url: str) -> str:
-    """URL dan qisqa hash yasash (callback_data uchun)"""
     return hashlib.md5(url.encode()).hexdigest()[:10]
 
 
 def _format_filesize(size_bytes) -> str:
-    """Baytni o'qilishi oson formatga o'girish"""
     if not size_bytes:
         return ""
     mb = size_bytes / (1024 * 1024)
@@ -638,17 +599,12 @@ def _format_filesize(size_bytes) -> str:
 
 
 async def get_youtube_formats(url: str) -> dict:
-    """
-    YouTube videoning mavjud formatlarini olish.
-    Return: {"url_hash": "abc123", "title": "...", "formats": [...], "thumbnail": "..."}
-    """
     try:
         result = await asyncio.get_event_loop().run_in_executor(
             None, _extract_youtube_formats, url
         )
         if result:
             url_hash = make_url_hash(url)
-            # Cache ga saqlash (5 daqiqa)
             _yt_format_cache[url_hash] = {
                 "url": url,
                 "formats": result["formats"],
@@ -665,7 +621,6 @@ async def get_youtube_formats(url: str) -> dict:
 
 
 def _extract_youtube_formats(url: str) -> dict:
-    """yt-dlp orqali YouTube formatlarini olish (download qilmaydi)"""
     import yt_dlp
 
     ydl_opts = {
@@ -674,25 +629,9 @@ def _extract_youtube_formats(url: str) -> dict:
         'no_warnings': True,
         'socket_timeout': 20,
         'skip_download': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        },
     }
-
-    platform = get_platform_from_url(url)
-    if platform == "YouTube":
-        ydl_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['web'],
-                'player_skip': [],
-            },
-            'youtubepot-bgutilhttp': {
-                'base_url': [BGUTIL_URL],
-            },
-        }
-
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
+    ydl_opts.update(_yt_base_opts())
+    # YouTube format olishda cookies ISHLATMAYMIZ
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -704,32 +643,27 @@ def _extract_youtube_formats(url: str) -> dict:
         duration = info.get('duration', 0)
         all_formats = info.get('formats', [])
 
-        # Sifatlarni guruhlash
-        quality_map = {}  # height -> {"format_id", "filesize", ...}
+        quality_map = {}
 
         for fmt in all_formats:
             height = fmt.get('height')
             vcodec = fmt.get('vcodec', 'none')
             acodec = fmt.get('acodec', 'none')
 
-            # Faqat video formatlar (acodec bo'lishi mumkin yoki yo'q)
             if not height or vcodec == 'none':
                 continue
 
-            # Eng yaxshi formatni tanlash (h264 ustunlik)
             ext = fmt.get('ext', 'mp4')
             format_id = fmt.get('format_id', '')
             filesize = fmt.get('filesize') or fmt.get('filesize_approx') or 0
             codec = vcodec.split('.')[0] if vcodec else ''
 
-            # Agar bu sifat allaqachon bor bo'lsa, h264 ni ustun qo'yamiz
             if height in quality_map:
                 existing = quality_map[height]
-                # h264 (avc1) ni afzal ko'ramiz
                 if 'avc' in codec or 'h264' in codec:
-                    pass  # yangilash
+                    pass
                 elif 'avc' in existing.get('codec', '') or 'h264' in existing.get('codec', ''):
-                    continue  # mavjudini saqlab qolish
+                    continue
                 elif filesize <= existing.get('filesize', 0):
                     continue
 
@@ -745,24 +679,20 @@ def _extract_youtube_formats(url: str) -> dict:
         if not quality_map:
             return None
 
-        # Tartiblash (yuqoridan pastga)
         sorted_qualities = sorted(quality_map.keys(), reverse=True)
 
-        # Eng yaxshi audio format ID
         best_audio_id = None
         for fmt in all_formats:
             if fmt.get('acodec', 'none') != 'none' and fmt.get('vcodec', 'none') == 'none':
                 if fmt.get('ext') in ('m4a', 'mp4', 'webm'):
                     best_audio_id = fmt.get('format_id')
                     if fmt.get('ext') == 'm4a':
-                        break  # m4a eng yaxshi
+                        break
 
-        # Formatlar ro'yxatini tayyorlash
         formats_list = []
         target_qualities = [2160, 1440, 1080, 720, 480, 360]
 
         for target_h in target_qualities:
-            # Eng yaqin mavjud sifatni topish
             best_match = None
             for h in sorted_qualities:
                 if h == target_h:
@@ -774,13 +704,11 @@ def _extract_youtube_formats(url: str) -> dict:
             fmt_info = quality_map[best_match]
             fid = fmt_info['format_id']
 
-            # Video + audio birlashtirish uchun format
             if not fmt_info['has_audio'] and best_audio_id:
                 combined_id = f"{fid}+{best_audio_id}"
             else:
                 combined_id = fid
 
-            # Fayl hajmini hisoblash (video + audio taxminiy)
             total_size = fmt_info['filesize']
 
             formats_list.append({
@@ -802,17 +730,12 @@ def _extract_youtube_formats(url: str) -> dict:
 
 
 async def download_youtube_with_format(url_hash: str, format_id: str) -> dict:
-    """
-    Tanlangan formatda YouTube videoni yuklab olish.
-    format_id: "137+140" (video+audio) yoki "audio" (faqat audio)
-    """
     cache_entry = _yt_format_cache.get(url_hash)
     if not cache_entry:
         return None
 
     url = cache_entry["url"]
 
-    # Cache muddati tekshirish (5 daqiqa)
     if time.monotonic() - cache_entry["timestamp"] > 300:
         _yt_format_cache.pop(url_hash, None)
         return None
@@ -833,13 +756,11 @@ async def download_youtube_with_format(url_hash: str, format_id: str) -> dict:
             elapsed = time.monotonic() - start_time
             logger.info(f"[YouTube format] yuklandi: {format_id} ({elapsed:.1f}s)")
 
-        # Cache dan o'chirish
         _yt_format_cache.pop(url_hash, None)
         return result
 
 
 def _download_youtube_format(url: str, format_id: str) -> dict:
-    """Tanlangan formatda YouTube videoni yuklab olish"""
     import yt_dlp
 
     output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
@@ -862,18 +783,9 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
             'key': 'FFmpegVideoConvertor',
             'preferedformat': 'mp4',
         }],
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web'],
-                'player_skip': [],
-            },
-            'youtubepot-bgutilhttp': {
-                'base_url': [BGUTIL_URL],
-            },
-        },
     }
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
+    ydl_opts.update(_yt_base_opts())
+    # YouTube uchun cookies ishlatmaymiz
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -909,7 +821,6 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
 
 
 def _download_youtube_audio(url: str) -> dict:
-    """YouTube dan faqat audio (MP3) yuklab olish"""
     import yt_dlp
 
     output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
@@ -930,18 +841,9 @@ def _download_youtube_audio(url: str) -> dict:
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web'],
-                'player_skip': [],
-            },
-            'youtubepot-bgutilhttp': {
-                'base_url': [BGUTIL_URL],
-            },
-        },
     }
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
+    ydl_opts.update(_yt_base_opts())
+    # YouTube uchun cookies ishlatmaymiz
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -950,7 +852,6 @@ def _download_youtube_audio(url: str) -> dict:
                 return None
 
             file_path = ydl.prepare_filename(info)
-            # Audio postprocessor ext ni o'zgartiradi
             base, _ = os.path.splitext(file_path)
             for ext in ['.mp3', '.m4a', '.opus', '.webm']:
                 candidate = base + ext
@@ -978,7 +879,6 @@ def _download_youtube_audio(url: str) -> dict:
 
 
 def get_cached_yt_url(url_hash: str) -> str:
-    """Cache dan URL olish"""
     entry = _yt_format_cache.get(url_hash)
     if entry:
         return entry["url"]
