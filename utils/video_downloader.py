@@ -64,10 +64,9 @@ def is_supported_url(url: str) -> bool:
 WARP_PROXY = "socks5://warp:9091"
 
 
-def _yt_base_opts() -> dict:
-    """YouTube uchun umumiy yt-dlp opsiyalari — android_vr + bgutil + WARP proxy"""
-    return {
-        'proxy': WARP_PROXY,
+def _yt_base_opts(use_proxy=False) -> dict:
+    """YouTube uchun umumiy yt-dlp opsiyalari — android_vr + bgutil"""
+    opts = {
         'extractor_args': {
             'youtube': {
                 'player_client': ['android_vr'],
@@ -78,6 +77,9 @@ def _yt_base_opts() -> dict:
             },
         },
     }
+    if use_proxy:
+        opts['proxy'] = WARP_PROXY
+    return opts
 
 
 async def download_video(url: str) -> dict:
@@ -507,36 +509,34 @@ def _download_with_ytdlp(url: str) -> dict:
     output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
     platform = get_platform_from_url(url)
 
-    ydl_opts = {
-        'outtmpl': output_template,
-        'format': 'bestvideo[height<=1080][filesize<2G]+bestaudio/best[height<=1080][filesize<2G]/best',
-        'merge_output_format': 'mp4',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 30,
-        'retries': 10,
-        'fragment_retries': 10,
-        'file_access_retries': 5,
-        'extractor_retries': 5,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        },
-        'postprocessors': [{
-            'key': 'FFmpegVideoConvertor',
-            'preferedformat': 'mp4',
-        }],
-    }
+    def _try_download(use_proxy=False):
+        ydl_opts = {
+            'outtmpl': output_template,
+            'format': 'bestvideo[height<=1080][filesize<2G]+bestaudio/best[height<=1080][filesize<2G]/best',
+            'merge_output_format': 'mp4',
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'fragment_retries': 3,
+            'file_access_retries': 3,
+            'extractor_retries': 2,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+            },
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }],
+        }
 
-    if platform == "YouTube":
-        ydl_opts.update(_yt_base_opts())
-        # YouTube uchun cookies ISHLATMAYMIZ — android_vr + bgutil PO token yetarli
-    else:
-        # Instagram va boshqalar uchun cookies
-        if os.path.exists(COOKIES_FILE):
-            ydl_opts['cookiefile'] = COOKIES_FILE
+        if platform == "YouTube":
+            ydl_opts.update(_yt_base_opts(use_proxy=use_proxy))
+        else:
+            if os.path.exists(COOKIES_FILE):
+                ydl_opts['cookiefile'] = COOKIES_FILE
 
-    try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if info is None:
@@ -564,9 +564,27 @@ def _download_with_ytdlp(url: str) -> dict:
                 'width': info.get('width', 0),
                 'height': info.get('height', 0),
             }
+
+    # 1. Proxysiz (tez)
+    try:
+        result = _try_download(use_proxy=False)
+        if result:
+            return result
     except Exception as e:
-        logger.error(f"[yt-dlp] {platform} xatosi: {e}", exc_info=True)
-        return None
+        if platform == "YouTube":
+            logger.info(f"[yt-dlp] Proxysiz xato, WARP fallback: {e}")
+        else:
+            logger.error(f"[yt-dlp] {platform} xatosi: {e}", exc_info=True)
+            return None
+
+    # 2. YouTube bloklangan bo'lsa — WARP proxy bilan
+    if platform == "YouTube":
+        try:
+            return _try_download(use_proxy=True)
+        except Exception as e:
+            logger.error(f"[yt-dlp] YouTube proxy bilan ham xato: {e}", exc_info=True)
+
+    return None
 
 
 def cleanup_file(file_path: str):
@@ -627,110 +645,115 @@ async def get_youtube_formats(url: str) -> dict:
 def _extract_youtube_formats(url: str) -> dict:
     import yt_dlp
 
-    ydl_opts = {
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 20,
-        'skip_download': True,
-    }
-    ydl_opts.update(_yt_base_opts())
-    # YouTube format olishda cookies ISHLATMAYMIZ
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        if not info:
-            return None
-
-        title = info.get('title', 'YouTube Video')
-        thumbnail = info.get('thumbnail', '')
-        duration = info.get('duration', 0)
-        all_formats = info.get('formats', [])
-
-        quality_map = {}
-
-        for fmt in all_formats:
-            height = fmt.get('height')
-            vcodec = fmt.get('vcodec', 'none')
-            acodec = fmt.get('acodec', 'none')
-
-            if not height or vcodec == 'none':
-                continue
-
-            ext = fmt.get('ext', 'mp4')
-            format_id = fmt.get('format_id', '')
-            filesize = fmt.get('filesize') or fmt.get('filesize_approx') or 0
-            codec = vcodec.split('.')[0] if vcodec else ''
-
-            if height in quality_map:
-                existing = quality_map[height]
-                if 'avc' in codec or 'h264' in codec:
-                    pass
-                elif 'avc' in existing.get('codec', '') or 'h264' in existing.get('codec', ''):
-                    continue
-                elif filesize <= existing.get('filesize', 0):
-                    continue
-
-            quality_map[height] = {
-                'format_id': format_id,
-                'height': height,
-                'filesize': filesize,
-                'codec': codec,
-                'ext': ext,
-                'has_audio': acodec != 'none',
-            }
-
-        if not quality_map:
-            return None
-
-        sorted_qualities = sorted(quality_map.keys(), reverse=True)
-
-        best_audio_id = None
-        for fmt in all_formats:
-            if fmt.get('acodec', 'none') != 'none' and fmt.get('vcodec', 'none') == 'none':
-                if fmt.get('ext') in ('m4a', 'mp4', 'webm'):
-                    best_audio_id = fmt.get('format_id')
-                    if fmt.get('ext') == 'm4a':
-                        break
-
-        formats_list = []
-        target_qualities = [2160, 1440, 1080, 720, 480, 360]
-
-        for target_h in target_qualities:
-            best_match = None
-            for h in sorted_qualities:
-                if h == target_h:
-                    best_match = h
-                    break
-            if not best_match:
-                continue
-
-            fmt_info = quality_map[best_match]
-            fid = fmt_info['format_id']
-
-            if not fmt_info['has_audio'] and best_audio_id:
-                combined_id = f"{fid}+{best_audio_id}"
-            else:
-                combined_id = fid
-
-            total_size = fmt_info['filesize']
-
-            formats_list.append({
-                'quality': f"{best_match}p",
-                'format_id': combined_id,
-                'size_text': _format_filesize(total_size) if total_size else "",
-                'height': best_match,
-            })
-
-        if not formats_list:
-            return None
-
-        return {
-            'title': title,
-            'thumbnail': thumbnail,
-            'duration': duration,
-            'formats': formats_list,
+    def _try_extract(use_proxy=False):
+        ydl_opts = {
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 20,
+            'skip_download': True,
         }
+        ydl_opts.update(_yt_base_opts(use_proxy=use_proxy))
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    try:
+        info = _try_extract(use_proxy=False)
+    except Exception:
+        info = _try_extract(use_proxy=True)
+
+    if not info:
+        return None
+
+    title = info.get('title', 'YouTube Video')
+    thumbnail = info.get('thumbnail', '')
+    duration = info.get('duration', 0)
+    all_formats = info.get('formats', [])
+
+    quality_map = {}
+
+    for fmt in all_formats:
+        height = fmt.get('height')
+        vcodec = fmt.get('vcodec', 'none')
+        acodec = fmt.get('acodec', 'none')
+
+        if not height or vcodec == 'none':
+            continue
+
+        ext = fmt.get('ext', 'mp4')
+        format_id = fmt.get('format_id', '')
+        filesize = fmt.get('filesize') or fmt.get('filesize_approx') or 0
+        codec = vcodec.split('.')[0] if vcodec else ''
+
+        if height in quality_map:
+            existing = quality_map[height]
+            if 'avc' in codec or 'h264' in codec:
+                pass
+            elif 'avc' in existing.get('codec', '') or 'h264' in existing.get('codec', ''):
+                continue
+            elif filesize <= existing.get('filesize', 0):
+                continue
+
+        quality_map[height] = {
+            'format_id': format_id,
+            'height': height,
+            'filesize': filesize,
+            'codec': codec,
+            'ext': ext,
+            'has_audio': acodec != 'none',
+        }
+
+    if not quality_map:
+        return None
+
+    sorted_qualities = sorted(quality_map.keys(), reverse=True)
+
+    best_audio_id = None
+    for fmt in all_formats:
+        if fmt.get('acodec', 'none') != 'none' and fmt.get('vcodec', 'none') == 'none':
+            if fmt.get('ext') in ('m4a', 'mp4', 'webm'):
+                best_audio_id = fmt.get('format_id')
+                if fmt.get('ext') == 'm4a':
+                    break
+
+    formats_list = []
+    target_qualities = [2160, 1440, 1080, 720, 480, 360]
+
+    for target_h in target_qualities:
+        best_match = None
+        for h in sorted_qualities:
+            if h == target_h:
+                best_match = h
+                break
+        if not best_match:
+            continue
+
+        fmt_info = quality_map[best_match]
+        fid = fmt_info['format_id']
+
+        if not fmt_info['has_audio'] and best_audio_id:
+            combined_id = f"{fid}+{best_audio_id}"
+        else:
+            combined_id = fid
+
+        total_size = fmt_info['filesize']
+
+        formats_list.append({
+            'quality': f"{best_match}p",
+            'format_id': combined_id,
+            'size_text': _format_filesize(total_size) if total_size else "",
+            'height': best_match,
+        })
+
+    if not formats_list:
+        return None
+
+    return {
+        'title': title,
+        'thumbnail': thumbnail,
+        'duration': duration,
+        'formats': formats_list,
+    }
 
 
 async def download_youtube_with_format(url_hash: str, format_id: str) -> dict:
@@ -767,31 +790,30 @@ async def download_youtube_with_format(url_hash: str, format_id: str) -> dict:
 def _download_youtube_format(url: str, format_id: str) -> dict:
     import yt_dlp
 
-    output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
-    ydl_opts = {
-        'outtmpl': output_template,
-        'format': f"{format_id}/bestvideo+bestaudio/best",
-        'merge_output_format': 'mp4',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 30,
-        'retries': 10,
-        'fragment_retries': 10,
-        'file_access_retries': 5,
-        'extractor_retries': 5,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        },
-        'postprocessors': [{
-            'key': 'FFmpegVideoConvertor',
-            'preferedformat': 'mp4',
-        }],
-    }
-    ydl_opts.update(_yt_base_opts())
-    # YouTube uchun cookies ishlatmaymiz
+    def _try(use_proxy=False):
+        output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
+        ydl_opts = {
+            'outtmpl': output_template,
+            'format': f"{format_id}/bestvideo+bestaudio/best",
+            'merge_output_format': 'mp4',
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'fragment_retries': 3,
+            'file_access_retries': 3,
+            'extractor_retries': 2,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+            },
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }],
+        }
+        ydl_opts.update(_yt_base_opts(use_proxy=use_proxy))
 
-    try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if info is None:
@@ -819,6 +841,16 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
                 'width': info.get('width', 0),
                 'height': info.get('height', 0),
             }
+
+    try:
+        result = _try(use_proxy=False)
+        if result:
+            return result
+    except Exception:
+        pass
+
+    try:
+        return _try(use_proxy=True)
     except Exception as e:
         logger.error(f"[YouTube format download] xatosi: {e}", exc_info=True)
         return None
@@ -827,29 +859,28 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
 def _download_youtube_audio(url: str) -> dict:
     import yt_dlp
 
-    output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
-    ydl_opts = {
-        'outtmpl': output_template,
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 30,
-        'retries': 10,
-        'fragment_retries': 10,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        },
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-    }
-    ydl_opts.update(_yt_base_opts())
-    # YouTube uchun cookies ishlatmaymiz
+    def _try(use_proxy=False):
+        output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
+        ydl_opts = {
+            'outtmpl': output_template,
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'fragment_retries': 3,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+            },
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+        ydl_opts.update(_yt_base_opts(use_proxy=use_proxy))
 
-    try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if info is None:
@@ -877,6 +908,16 @@ def _download_youtube_audio(url: str) -> dict:
                 'height': 0,
                 'is_audio': True,
             }
+
+    try:
+        result = _try(use_proxy=False)
+        if result:
+            return result
+    except Exception:
+        pass
+
+    try:
+        return _try(use_proxy=True)
     except Exception as e:
         logger.error(f"[YouTube audio] xatosi: {e}", exc_info=True)
         return None

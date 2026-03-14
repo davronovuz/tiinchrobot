@@ -97,10 +97,9 @@ user_results = {}
 # YouTube Music qidiruv
 # =====================================================
 
-def _yt_base_opts():
-    """YouTube uchun umumiy opsiyalar — android_vr + bgutil + WARP proxy"""
-    return {
-        'proxy': WARP_PROXY,
+def _yt_base_opts(use_proxy=False):
+    """YouTube uchun umumiy opsiyalar — android_vr + bgutil"""
+    opts = {
         'extractor_args': {
             'youtube': {
                 'player_client': ['android_vr'],
@@ -111,10 +110,13 @@ def _yt_base_opts():
             },
         },
     }
+    if use_proxy:
+        opts['proxy'] = WARP_PROXY
+    return opts
 
 
 def _get_ydl_opts_search(max_results=20):
-    """yt-dlp qidiruv uchun sozlamalar"""
+    """yt-dlp qidiruv uchun sozlamalar (proxysiz — tez)"""
     opts = {
         'quiet': True,
         'no_warnings': True,
@@ -122,11 +124,11 @@ def _get_ydl_opts_search(max_results=20):
         'default_search': f'ytsearch{max_results}',
         'socket_timeout': 10,
     }
-    opts.update(_yt_base_opts())
+    opts.update(_yt_base_opts(use_proxy=False))
     return opts
 
 
-def _get_ydl_opts_download(tmp_dir):
+def _get_ydl_opts_download(tmp_dir, use_proxy=False):
     """yt-dlp yuklash uchun sozlamalar"""
     opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio/best',
@@ -134,16 +136,16 @@ def _get_ydl_opts_download(tmp_dir):
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 30,
-        'retries': 10,
-        'fragment_retries': 10,
-        'extractor_retries': 5,
+        'retries': 3,
+        'fragment_retries': 3,
+        'extractor_retries': 2,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
     }
-    opts.update(_yt_base_opts())
+    opts.update(_yt_base_opts(use_proxy=use_proxy))
     return opts
 
 
@@ -277,35 +279,42 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
         info = None
         file_path = None
 
-        # 1. Cobalt API (tez va ishonchli)
-        info, file_path = await _download_audio_cobalt(url, tmp_dir)
+        import yt_dlp
 
-        # 2. yt-dlp fallback
-        if not file_path or not os.path.exists(file_path):
-            logger.info("[Music] Cobalt muvaffaqiyatsiz, yt-dlp fallback...")
-            import yt_dlp
-            ydl_opts = _get_ydl_opts_download(tmp_dir)
+        def _yt_download(use_proxy=False):
+            ydl_opts = _get_ydl_opts_download(tmp_dir, use_proxy=use_proxy)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                _info = ydl.extract_info(url, download=True)
+                if _info is None:
+                    return None, None
+                _file_path = ydl.prepare_filename(_info)
+                base, _ = os.path.splitext(_file_path)
+                mp3_path = base + '.mp3'
+                if os.path.exists(mp3_path):
+                    _file_path = mp3_path
+                elif not os.path.exists(_file_path):
+                    for ext in ['.mp3', '.m4a', '.webm', '.opus']:
+                        candidate = base + ext
+                        if os.path.exists(candidate):
+                            _file_path = candidate
+                            break
+                return _info, _file_path
 
-            def _download():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    _info = ydl.extract_info(url, download=True)
-                    if _info is None:
-                        return None, None
-                    _file_path = ydl.prepare_filename(_info)
-                    base, _ = os.path.splitext(_file_path)
-                    mp3_path = base + '.mp3'
-                    if os.path.exists(mp3_path):
-                        _file_path = mp3_path
-                    elif not os.path.exists(_file_path):
-                        for ext in ['.mp3', '.m4a', '.webm', '.opus']:
-                            candidate = base + ext
-                            if os.path.exists(candidate):
-                                _file_path = candidate
-                                break
-                    return _info, _file_path
+        loop = asyncio.get_event_loop()
 
-            loop = asyncio.get_event_loop()
-            info, file_path = await loop.run_in_executor(None, _download)
+        # 1. yt-dlp proxysiz (tez)
+        try:
+            info, file_path = await loop.run_in_executor(None, lambda: _yt_download(False))
+        except Exception as e:
+            logger.info(f"[Music] Proxysiz xato, WARP proxy bilan qayta urinish: {e}")
+            info, file_path = None, None
+
+        # 2. yt-dlp WARP proxy bilan (bloklangan bo'lsa)
+        if not info or not file_path or not os.path.exists(str(file_path) if file_path else ''):
+            try:
+                info, file_path = await loop.run_in_executor(None, lambda: _yt_download(True))
+            except Exception:
+                info, file_path = None, None
 
         if not info or not file_path or not os.path.exists(file_path):
             return False
