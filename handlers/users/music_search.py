@@ -20,7 +20,6 @@ from utils.misc.download_file import world_music, main_data, top_music, new_trek
 
 logger = logging.getLogger(__name__)
 
-COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
 BGUTIL_URL = os.getenv("BGUTIL_URL", "http://bgutil:4416")
 
 
@@ -97,69 +96,52 @@ user_results = {}
 # YouTube Music qidiruv
 # =====================================================
 
+def _yt_base_opts():
+    """YouTube uchun umumiy opsiyalar — android_vr + bgutil, cookiessiz"""
+    return {
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android_vr'],
+                'player_skip': [],
+            },
+            'youtubepot-bgutilhttp': {
+                'base_url': [BGUTIL_URL],
+            },
+        },
+    }
+
+
 def _get_ydl_opts_search(max_results=20):
-    """yt-dlp qidiruv uchun umumiy sozlamalar"""
+    """yt-dlp qidiruv uchun sozlamalar"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'extract_flat': True,
         'default_search': f'ytsearch{max_results}',
         'socket_timeout': 10,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web', 'web_safari', 'android_vr'],
-                'player_skip': ['configs'],
-            },
-            'youtubepot-bgutilhttp': {
-                'base_url': [BGUTIL_URL],
-            },
-        },
     }
-    if os.path.exists(COOKIES_FILE):
-        opts['cookiefile'] = COOKIES_FILE
-    try:
-        import curl_cffi  # noqa: F401
-        from yt_dlp.networking.impersonate import ImpersonateTarget
-        opts['impersonate'] = ImpersonateTarget('chrome', '131', 'macos', '14')
-    except (ImportError, Exception):
-        pass
+    opts.update(_yt_base_opts())
     return opts
 
 
 def _get_ydl_opts_download(tmp_dir):
-    """yt-dlp yuklash uchun umumiy sozlamalar"""
+    """yt-dlp yuklash uchun sozlamalar"""
     opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': os.path.join(tmp_dir, '%(id)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 30,
-        'retries': 5,
-        'fragment_retries': 5,
-        'extractor_retries': 3,
+        'retries': 10,
+        'fragment_retries': 10,
+        'extractor_retries': 5,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web', 'web_safari', 'android_vr'],
-                'player_skip': ['configs'],
-            },
-            'youtubepot-bgutilhttp': {
-                'base_url': [BGUTIL_URL],
-            },
-        },
     }
-    if os.path.exists(COOKIES_FILE):
-        opts['cookiefile'] = COOKIES_FILE
-    try:
-        import curl_cffi  # noqa: F401
-        from yt_dlp.networking.impersonate import ImpersonateTarget
-        opts['impersonate'] = ImpersonateTarget('chrome', '131', 'macos', '14')
-    except (ImportError, Exception):
-        pass
+    opts.update(_yt_base_opts())
     return opts
 
 
