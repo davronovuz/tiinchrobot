@@ -61,9 +61,13 @@ def is_supported_url(url: str) -> bool:
     return any(keyword in lower_url for keyword in SUPPORTED_PLATFORMS)
 
 
+WARP_PROXY = "socks5://warp:9091"
+
+
 def _yt_base_opts() -> dict:
-    """YouTube uchun umumiy yt-dlp opsiyalari — android_vr + bgutil, cookiessiz"""
+    """YouTube uchun umumiy yt-dlp opsiyalari — android_vr + bgutil + WARP proxy"""
     return {
+        'proxy': WARP_PROXY,
         'extractor_args': {
             'youtube': {
                 'player_client': ['android_vr'],

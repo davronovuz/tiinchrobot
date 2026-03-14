@@ -21,6 +21,7 @@ from utils.misc.download_file import world_music, main_data, top_music, new_trek
 logger = logging.getLogger(__name__)
 
 BGUTIL_URL = os.getenv("BGUTIL_URL", "http://bgutil:4416")
+WARP_PROXY = "socks5://warp:9091"
 
 
 # =====================================================
@@ -97,8 +98,9 @@ user_results = {}
 # =====================================================
 
 def _yt_base_opts():
-    """YouTube uchun umumiy opsiyalar — android_vr + bgutil, cookiessiz"""
+    """YouTube uchun umumiy opsiyalar — android_vr + bgutil + WARP proxy"""
     return {
+        'proxy': WARP_PROXY,
         'extractor_args': {
             'youtube': {
                 'player_client': ['android_vr'],
