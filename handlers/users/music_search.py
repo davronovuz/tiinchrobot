@@ -129,7 +129,7 @@ def _get_ydl_opts_search(max_results=20):
 
 
 def _get_ydl_opts_download(tmp_dir, use_proxy=False):
-    """yt-dlp yuklash uchun sozlamalar"""
+    """yt-dlp yuklash uchun sozlamalar — m4a to'g'ridan-to'g'ri (konvertatsiyasiz)"""
     opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': os.path.join(tmp_dir, '%(id)s.%(ext)s'),
@@ -139,18 +139,49 @@ def _get_ydl_opts_download(tmp_dir, use_proxy=False):
         'retries': 3,
         'fragment_retries': 3,
         'extractor_retries': 2,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
     }
     opts.update(_yt_base_opts(use_proxy=use_proxy))
     return opts
 
 
+async def search_music_deezer(query, max_results=20):
+    """Deezer API dan musiqa qidirish — juda tez (<1 sek)"""
+    results = []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.deezer.com/search",
+                params={"q": query, "limit": max_results, "order": "RANKING"},
+            )
+            if resp.status_code != 200:
+                return results
+
+            data = resp.json()
+            for track in data.get("data", []):
+                title = track.get("title", "")
+                artist = track.get("artist", {}).get("name", "")
+                duration = track.get("duration", 0)
+                track_id = track.get("id", 0)
+                if not title:
+                    continue
+                results.append({
+                    "title": title,
+                    "artist": artist,
+                    "url": f"deezer:{track_id}",
+                    "source": "deezer",
+                    "type": "deezer",
+                    "duration": int(duration),
+                    "deezer_id": track_id,
+                    "preview_url": track.get("preview", ""),
+                    "album_cover": track.get("album", {}).get("cover_medium", ""),
+                })
+    except Exception as e:
+        logger.error(f"Deezer qidiruvda xatolik: {e}")
+    return results
+
+
 async def search_music_youtube(query, max_results=20):
-    """YouTube dan musiqa qidirish — tez"""
+    """YouTube dan musiqa qidirish — fallback"""
     results = []
     try:
         import yt_dlp
@@ -187,8 +218,11 @@ async def search_music_youtube(query, max_results=20):
 
 
 async def search_music(query):
-    """YouTube dan qidirish"""
-    return await search_music_youtube(query, max_results=20)
+    """Deezer dan qidirish, bo'sh bo'lsa YouTube fallback"""
+    results = await search_music_deezer(query, max_results=20)
+    if not results:
+        results = await search_music_youtube(query, max_results=20)
+    return results
 
 
 # =====================================================
@@ -265,35 +299,71 @@ async def _download_audio_cobalt(url: str, tmp_dir: str) -> tuple:
     return None, None
 
 
+def _normalize_cache_key(artist: str, title: str) -> str:
+    """Artist+title dan cache kaliti yasash"""
+    key = f"{artist} - {title}".lower().strip()
+    # Ortiqcha belgilarni olib tashlash
+    import re
+    key = re.sub(r'[^\w\s-]', '', key)
+    key = re.sub(r'\s+', ' ', key)
+    return f"music:{key}"
+
+
 async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", artist_hint: str = ""):
-    """YouTube URL dan audio yuklab, chatga yuborish (Cobalt -> yt-dlp fallback)"""
-    # Avval cache tekshirish
-    cached = await cache_db.get_file_id_by_url(url)
-    if cached:
-        caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
-        await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
-        return True
+    """Musiqa yuklab yuborish — cache -> YouTube (proxysiz -> proxy fallback)"""
+    caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
+
+    # 1. Normalized cache tekshirish (artist+title bo'yicha)
+    if title_hint and artist_hint:
+        cache_key = _normalize_cache_key(artist_hint, title_hint)
+        cached = await cache_db.get_file_id_by_url(cache_key)
+        if cached:
+            await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
+            return True
+
+    # 2. URL bo'yicha cache
+    if not url.startswith("deezer:"):
+        cached = await cache_db.get_file_id_by_url(url)
+        if cached:
+            await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
+            return True
+
+    # 3. Deezer URL bo'lsa — YouTube dan qidirish kerak
+    yt_url = url
+    if url.startswith("deezer:"):
+        search_q = f"{artist_hint} {title_hint}".strip()
+        if not search_q:
+            return False
+        yt_results = await search_music_youtube(search_q, max_results=3)
+        if not yt_results:
+            return False
+        yt_url = yt_results[0]["url"]
+
+        # YouTube URL bo'yicha ham cache tekshirish
+        cached = await cache_db.get_file_id_by_url(yt_url)
+        if cached:
+            await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
+            # Normalized cache ham saqlash
+            if title_hint and artist_hint:
+                await cache_db.add_cache("youtube", _normalize_cache_key(artist_hint, title_hint), cached["file_id"], "audio")
+            return True
 
     tmp_dir = tempfile.mkdtemp(prefix="ytmusic_")
     try:
         info = None
         file_path = None
-
         import yt_dlp
 
         def _yt_download(use_proxy=False):
             ydl_opts = _get_ydl_opts_download(tmp_dir, use_proxy=use_proxy)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                _info = ydl.extract_info(url, download=True)
+                _info = ydl.extract_info(yt_url, download=True)
                 if _info is None:
                     return None, None
                 _file_path = ydl.prepare_filename(_info)
-                base, _ = os.path.splitext(_file_path)
-                mp3_path = base + '.mp3'
-                if os.path.exists(mp3_path):
-                    _file_path = mp3_path
-                elif not os.path.exists(_file_path):
-                    for ext in ['.mp3', '.m4a', '.webm', '.opus']:
+                if not os.path.exists(_file_path):
+                    base, _ = os.path.splitext(_file_path)
+                    for ext in ['.m4a', '.mp3', '.webm', '.opus']:
                         candidate = base + ext
                         if os.path.exists(candidate):
                             _file_path = candidate
@@ -302,14 +372,13 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
 
         loop = asyncio.get_event_loop()
 
-        # 1. yt-dlp proxysiz (tez)
+        # Proxysiz (tez)
         try:
             info, file_path = await loop.run_in_executor(None, lambda: _yt_download(False))
-        except Exception as e:
-            logger.info(f"[Music] Proxysiz xato, WARP proxy bilan qayta urinish: {e}")
+        except Exception:
             info, file_path = None, None
 
-        # 2. yt-dlp WARP proxy bilan (bloklangan bo'lsa)
+        # WARP proxy fallback
         if not info or not file_path or not os.path.exists(str(file_path) if file_path else ''):
             try:
                 info, file_path = await loop.run_in_executor(None, lambda: _yt_download(True))
@@ -319,22 +388,16 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
         if not info or not file_path or not os.path.exists(file_path):
             return False
 
-        title = info.get('title', title_hint or 'Audio')
-        artist = info.get('artist') or info.get('uploader', artist_hint or '')
+        title = title_hint or info.get('title', 'Audio')
+        artist = artist_hint or info.get('artist') or info.get('uploader', '')
         duration = int(info.get('duration') or 0)
         thumbnail_url = info.get('thumbnail', '')
-
-        # title_hint va artist_hint dan to'ldirish (Cobalt info kam bo'lsa)
-        if not title or title == title_hint:
-            title = title_hint or 'Audio'
-        if not artist:
-            artist = artist_hint or ''
 
         # Thumbnail
         thumb_data = None
         if thumbnail_url:
             try:
-                async with httpx.AsyncClient(timeout=8) as client:
+                async with httpx.AsyncClient(timeout=5) as client:
                     thumb_resp = await client.get(thumbnail_url)
                     if thumb_resp.status_code == 200:
                         thumb_path = os.path.join(tmp_dir, "thumb.jpg")
@@ -348,11 +411,13 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
         if file_size > 50 * 1024 * 1024:
             return False
 
-        caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
+        # Fayl kengaytmasini aniqlash
+        _, ext = os.path.splitext(file_path)
+        file_ext = ext.lstrip('.') or 'm4a'
 
         with open(file_path, "rb") as f:
             audio_data = BytesIO(f.read())
-            audio_data.name = f"{artist} - {title}.mp3"
+            audio_data.name = f"{artist} - {title}.{file_ext}"
             audio_data.seek(0)
 
             kwargs = {
@@ -369,7 +434,13 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
             try:
                 sent_msg = await bot.send_audio(**kwargs)
                 if sent_msg.audio:
-                    await cache_db.add_cache("youtube", url, sent_msg.audio.file_id, "audio")
+                    file_id = sent_msg.audio.file_id
+                    # URL bo'yicha cache
+                    await cache_db.add_cache("youtube", yt_url, file_id, "audio")
+                    # Normalized cache (artist+title)
+                    if title and artist:
+                        cache_key = _normalize_cache_key(artist, title)
+                        await cache_db.add_cache("youtube", cache_key, file_id, "audio")
             finally:
                 if "thumb" in kwargs and hasattr(kwargs["thumb"], "close"):
                     kwargs["thumb"].close()
