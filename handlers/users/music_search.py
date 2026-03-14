@@ -191,8 +191,78 @@ async def search_music(query):
 # YouTube dan audio yuklab yuborish (umumiy funksiya)
 # =====================================================
 
+async def _download_audio_cobalt(url: str, tmp_dir: str) -> tuple:
+    """Cobalt API orqali audio yuklash (tez va ishonchli)"""
+    cobalt_url = os.getenv("COBALT_API_URL", "http://cobalt:9000")
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.post(
+                cobalt_url,
+                json={
+                    "url": url,
+                    "downloadMode": "audio",
+                    "audioFormat": "mp3",
+                    "audioBitrate": "192",
+                    "filenameStyle": "basic",
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                }
+            )
+            if resp.status_code != 200:
+                logger.warning(f"[Cobalt audio] HTTP {resp.status_code}")
+                return None, None
+
+            data = resp.json()
+            status = data.get("status")
+            if status == "error":
+                logger.warning(f"[Cobalt audio] error: {data.get('error', {}).get('code', 'unknown')}")
+                return None, None
+
+            download_url = None
+            if status in ("tunnel", "redirect"):
+                download_url = data.get("url")
+            elif status == "picker":
+                items = data.get("picker", [])
+                if items:
+                    download_url = items[0].get("url")
+
+            if not download_url:
+                return None, None
+
+            file_path = os.path.join(tmp_dir, "cobalt_audio.mp3")
+            async with client.stream(
+                "GET", download_url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=300,
+            ) as stream:
+                if stream.status_code != 200:
+                    return None, None
+                with open(file_path, "wb") as f:
+                    async for chunk in stream.aiter_bytes(chunk_size=65536):
+                        f.write(chunk)
+
+            if os.path.getsize(file_path) < 1000:
+                os.unlink(file_path)
+                return None, None
+
+            # Cobalt da info cheklangan — faqat fayl qaytaramiz
+            info = {"title": data.get("filename", ""), "duration": 0}
+            logger.info("[Cobalt audio] muvaffaqiyatli yuklandi")
+            return info, file_path
+
+    except httpx.ConnectError:
+        logger.warning("[Cobalt audio] server ishlamayapti")
+    except httpx.TimeoutException:
+        logger.warning("[Cobalt audio] timeout")
+    except Exception as e:
+        logger.error(f"[Cobalt audio] xatolik: {e}")
+    return None, None
+
+
 async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", artist_hint: str = ""):
-    """YouTube URL dan audio yuklab, chatga yuborish"""
+    """YouTube URL dan audio yuklab, chatga yuborish (Cobalt -> yt-dlp fallback)"""
     # Avval cache tekshirish
     cached = await cache_db.get_file_id_by_url(url)
     if cached:
@@ -202,29 +272,38 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
 
     tmp_dir = tempfile.mkdtemp(prefix="ytmusic_")
     try:
-        import yt_dlp
-        ydl_opts = _get_ydl_opts_download(tmp_dir)
+        info = None
+        file_path = None
 
-        def _download():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info is None:
-                    return None, None
-                file_path = ydl.prepare_filename(info)
-                base, _ = os.path.splitext(file_path)
-                mp3_path = base + '.mp3'
-                if os.path.exists(mp3_path):
-                    file_path = mp3_path
-                elif not os.path.exists(file_path):
-                    for ext in ['.mp3', '.m4a', '.webm', '.opus']:
-                        candidate = base + ext
-                        if os.path.exists(candidate):
-                            file_path = candidate
-                            break
-                return info, file_path
+        # 1. Cobalt API (tez va ishonchli)
+        info, file_path = await _download_audio_cobalt(url, tmp_dir)
 
-        loop = asyncio.get_event_loop()
-        info, file_path = await loop.run_in_executor(None, _download)
+        # 2. yt-dlp fallback
+        if not file_path or not os.path.exists(file_path):
+            logger.info("[Music] Cobalt muvaffaqiyatsiz, yt-dlp fallback...")
+            import yt_dlp
+            ydl_opts = _get_ydl_opts_download(tmp_dir)
+
+            def _download():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    _info = ydl.extract_info(url, download=True)
+                    if _info is None:
+                        return None, None
+                    _file_path = ydl.prepare_filename(_info)
+                    base, _ = os.path.splitext(_file_path)
+                    mp3_path = base + '.mp3'
+                    if os.path.exists(mp3_path):
+                        _file_path = mp3_path
+                    elif not os.path.exists(_file_path):
+                        for ext in ['.mp3', '.m4a', '.webm', '.opus']:
+                            candidate = base + ext
+                            if os.path.exists(candidate):
+                                _file_path = candidate
+                                break
+                    return _info, _file_path
+
+            loop = asyncio.get_event_loop()
+            info, file_path = await loop.run_in_executor(None, _download)
 
         if not info or not file_path or not os.path.exists(file_path):
             return False
@@ -233,6 +312,12 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
         artist = info.get('artist') or info.get('uploader', artist_hint or '')
         duration = int(info.get('duration') or 0)
         thumbnail_url = info.get('thumbnail', '')
+
+        # title_hint va artist_hint dan to'ldirish (Cobalt info kam bo'lsa)
+        if not title or title == title_hint:
+            title = title_hint or 'Audio'
+        if not artist:
+            artist = artist_hint or ''
 
         # Thumbnail
         thumb_data = None
@@ -280,7 +365,7 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
 
         return True
     except Exception as e:
-        logger.error(f"YouTube audio yuklash xatosi: {e}", exc_info=True)
+        logger.error(f"Audio yuklash xatosi: {e}", exc_info=True)
         return False
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
