@@ -661,11 +661,19 @@ def _download_with_ytdlp(url: str) -> dict:
     except Exception as e:
         logger.info(f"[yt-dlp] {platform} proxysiz xato, WARP fallback: {e}")
 
-    # 2. IP bloklangan bo'lsa — WARP proxy bilan
-    try:
-        return _try_download(use_proxy=True)
-    except Exception as e:
-        logger.error(f"[yt-dlp] {platform} proxy bilan ham xato: {e}", exc_info=True)
+    # 2. IP bloklangan bo'lsa — WARP proxy bilan (2 marta urinish)
+    for attempt in range(2):
+        try:
+            result = _try_download(use_proxy=True)
+            if result:
+                return result
+        except Exception as e:
+            if attempt == 0:
+                logger.info(f"[yt-dlp] {platform} WARP 1-urinish xato, qayta: {e}")
+                import time as _time
+                _time.sleep(2)
+            else:
+                logger.error(f"[yt-dlp] {platform} WARP 2-urinish ham xato: {e}")
 
     return None
 
