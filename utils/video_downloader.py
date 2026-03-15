@@ -42,6 +42,7 @@ SUPPORTED_PLATFORMS = {
     "dailymotion.com": "Dailymotion",
     "reddit.com": "Reddit",
     "pinterest.com": "Pinterest",
+    "pin.it": "Pinterest",
     "snapchat.com": "Snapchat",
     "likee.video": "Likee",
     "kwai.com": "Kwai",
