@@ -224,7 +224,7 @@ async def _download_cobalt(url: str) -> dict:
 
 
 async def _download_pinterest(url: str) -> dict:
-    """Pinterest rasm/video yuklash — HTML og:image orqali"""
+    """Pinterest rasm/video yuklash — HTML dan pinimg URL olish"""
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             resp = await client.get(url, headers={
@@ -236,33 +236,24 @@ async def _download_pinterest(url: str) -> dict:
 
             html = resp.text
 
-            # og:video bor bo'lsa — video
-            og_video = re.search(r'<meta\s+(?:property="og:video(?::url)?"|content="([^"]+)")[\s/]*(?:property="og:video(?::url)?"|content="([^"]+)")', html)
-            video_url = None
-            if og_video:
-                video_url = og_video.group(1) or og_video.group(2)
-                if video_url and video_url.startswith("http"):
-                    return await _stream_download(video_url, "Pinterest", url)
+            # 1. Video URL (og:video yoki V/ pattern)
+            video_match = re.search(r'https://v\.pinimg\.com/[^\s"\'<>]+\.mp4', html)
+            if video_match:
+                return await _stream_download(video_match.group(0), "Pinterest", url)
 
-            # og:image — rasm
-            og_image = re.search(r'<meta\s+(?:property="og:image"|content="([^"]+)")[\s/]*(?:property="og:image"|content="([^"]+)")', html)
-            if not og_image:
-                # boshqa format
-                og_image = re.search(r'property="og:image"\s+content="([^"]+)"', html)
-                if og_image:
-                    image_url = og_image.group(1)
-                else:
-                    return None
-            else:
-                image_url = og_image.group(1) or og_image.group(2)
+            # 2. originals/ sifatli rasm
+            originals = re.findall(r'https://i\.pinimg\.com/originals/[^\s"\'<>]+\.(?:jpg|jpeg|png|webp|gif)', html)
+            if originals:
+                return await _stream_download(originals[0], "Pinterest", url)
 
-            if not image_url or not image_url.startswith("http"):
-                return None
+            # 3. Har qanday pinimg rasm — eng katta sifatga aylantirish
+            any_img = re.findall(r'https://i\.pinimg\.com/\d+x\d*/([^\s"\'<>]+\.(?:jpg|jpeg|png|webp|gif))', html)
+            if any_img:
+                image_url = f"https://i.pinimg.com/originals/{any_img[0]}"
+                return await _stream_download(image_url, "Pinterest", url)
 
-            # Eng katta sifat
-            image_url = re.sub(r'/\d+x\d*/', '/originals/', image_url)
-
-            return await _stream_download(image_url, "Pinterest", url)
+            logger.warning("[Pinterest] Rasm/video URL topilmadi")
+            return None
 
     except Exception as e:
         logger.error(f"[Pinterest] xatolik: {e}")
