@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from aiogram import types
-from aiogram.types import InputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InputFile, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo
 from aiogram.utils.markdown import html_decoration as hd
 from loader import dp, bot, cache_db
 from utils.video_downloader import (
@@ -188,10 +188,25 @@ async def _download_and_send(
         downloading_message = await message.reply(f"📥 {platform} dan yuklanmoqda...")
 
     file_path = None
+    file_paths = []
     try:
         result = await download_video(url)
 
-        if not result or not result.get('file_path'):
+        if not result:
+            await downloading_message.edit_text(
+                "⛔ Media topilmadi yoki yuklab olishda xatolik yuz berdi.\n"
+                "Iltimos, havolani tekshirib qayta urinib ko'ring."
+            )
+            return
+
+        # Carousel / ko'p medialar
+        if 'media_list' in result:
+            media_list = result['media_list']
+            file_paths = [item['file_path'] for item in media_list]
+            await _send_media_group(downloading_message, media_list, url, platform)
+            return
+
+        if not result.get('file_path'):
             await downloading_message.edit_text(
                 "⛔ Media topilmadi yoki yuklab olishda xatolik yuz berdi.\n"
                 "Iltimos, havolani tekshirib qayta urinib ko'ring."
@@ -211,6 +226,8 @@ async def _download_and_send(
     finally:
         if file_path:
             cleanup_file(file_path)
+        for fp in file_paths:
+            cleanup_file(fp)
 
 
 async def _shazam_from_video(chat_id: int, file_id: str):
@@ -419,6 +436,66 @@ async def _send_result(
                     chat_id, "🎬 Videodagi musiqani yuklab olish:",
                     reply_markup=markup,
                 )
+        except Exception:
+            pass
+
+
+async def _send_media_group(
+    status_message: types.Message, media_list: list, url: str, platform: str
+):
+    """Carousel / ko'p medialarni media group sifatida yuborish"""
+    chat_id = status_message.chat.id
+    caption = f"✨ {hd.bold('@tinchrobot')} – Tinchlikni xohlovchilar uchun!"
+
+    # Telegram media group max 10 ta element
+    items = media_list[:10]
+    media_group = []
+
+    for i, item in enumerate(items):
+        fp = item['file_path']
+        is_photo = item.get('is_photo', False)
+        item_caption = caption if i == 0 else None
+
+        if is_photo:
+            media_group.append(InputMediaPhoto(
+                media=InputFile(fp),
+                caption=item_caption,
+                parse_mode="HTML" if item_caption else None,
+            ))
+        else:
+            media_group.append(InputMediaVideo(
+                media=InputFile(fp),
+                caption=item_caption,
+                parse_mode="HTML" if item_caption else None,
+                duration=item.get('duration', 0),
+                width=item.get('width', 0),
+                height=item.get('height', 0),
+                supports_streaming=True,
+            ))
+
+    try:
+        if media_group:
+            await bot.send_media_group(chat_id=chat_id, media=media_group)
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Media group yuborishda xatolik: {e}", exc_info=True)
+        # Fallback: bitta-bitta yuborish
+        for item in items:
+            try:
+                if item.get('is_photo'):
+                    await bot.send_photo(chat_id, InputFile(item['file_path']),
+                                         caption=caption, parse_mode="HTML")
+                else:
+                    await bot.send_video(chat_id, InputFile(item['file_path']),
+                                         caption=caption, parse_mode="HTML",
+                                         supports_streaming=True)
+            except Exception as e2:
+                logger.error(f"Fallback yuborishda xatolik: {e2}")
+        try:
+            await status_message.delete()
         except Exception:
             pass
 

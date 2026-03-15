@@ -172,47 +172,41 @@ async def _download_cobalt(url: str) -> dict:
                 logger.warning(f"[Cobalt] error: {error_info.get('code', 'unknown')}")
                 return None
 
-            download_url = None
+            platform = get_platform_from_url(url)
+
             if status in ("tunnel", "redirect"):
                 download_url = data.get("url")
+                if not download_url:
+                    return None
+                return await _stream_download(download_url, platform, url)
+
             elif status == "picker":
                 items = data.get("picker", [])
-                if items:
-                    download_url = items[0].get("url")
-
-            if not download_url:
-                logger.warning(f"[Cobalt] URL topilmadi, status={status}")
-                return None
-
-            platform = get_platform_from_url(url)
-            file_path = os.path.join(TEMP_DIR, f"cobalt_{hash(url) & 0xFFFFFFFF}.mp4")
-
-            async with client.stream(
-                "GET", download_url,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=600,
-            ) as stream:
-                if stream.status_code != 200:
+                if not items:
                     return None
-                with open(file_path, "wb") as f:
-                    async for chunk in stream.aiter_bytes(chunk_size=65536):
-                        f.write(chunk)
 
-            filesize = os.path.getsize(file_path)
-            if filesize < 1000:
-                os.unlink(file_path)
-                return None
+                # Bitta element bo'lsa oddiy yuklash
+                if len(items) == 1:
+                    return await _stream_download(items[0].get("url"), platform, url)
 
-            return {
-                'file_path': file_path,
-                'title': data.get('filename', f'{platform} Video'),
-                'duration': 0,
-                'filesize': filesize,
-                'thumbnail': '',
-                'platform': platform,
-                'width': 0,
-                'height': 0,
-            }
+                # Ko'p elementli (carousel) — hammasini yuklash
+                media_list = []
+                for i, item in enumerate(items):
+                    item_url = item.get("url")
+                    if not item_url:
+                        continue
+                    item_result = await _stream_download(item_url, platform, url, item_index=i)
+                    if item_result:
+                        media_list.append(item_result)
+
+                if not media_list:
+                    return None
+                if len(media_list) == 1:
+                    return media_list[0]
+                return {'media_list': media_list, 'platform': platform}
+
+            logger.warning(f"[Cobalt] URL topilmadi, status={status}")
+            return None
 
     except httpx.ConnectError:
         logger.warning("[Cobalt] server ishlamayapti")
@@ -333,23 +327,35 @@ async def _try_instagram_v1_api(shortcode: str, original_url: str) -> dict:
 
             item = items[0]
 
+            # Carousel (bir nechta rasm/video)
+            carousel = item.get("carousel_media", [])
+            if carousel:
+                media_list = []
+                for i, cm in enumerate(carousel):
+                    vv = cm.get("video_versions", [])
+                    if vv:
+                        r = await _stream_download(vv[0]["url"], "Instagram", original_url, item_index=i)
+                        if r:
+                            media_list.append(r)
+                        continue
+                    img = cm.get("image_versions2", {}).get("candidates", [])
+                    if img:
+                        r = await _stream_download(img[0]["url"], "Instagram", original_url, item_index=i)
+                        if r:
+                            media_list.append(r)
+
+                if media_list:
+                    if len(media_list) == 1:
+                        return media_list[0]
+                    return {'media_list': media_list, 'platform': 'Instagram'}
+                return None
+
             # Video
             video_versions = item.get("video_versions", [])
             if video_versions:
                 video_url = video_versions[0].get("url")
                 if video_url:
                     return await _stream_download(video_url, "Instagram", original_url)
-
-            # Carousel
-            carousel = item.get("carousel_media", [])
-            if carousel:
-                for cm in carousel:
-                    vv = cm.get("video_versions", [])
-                    if vv:
-                        return await _stream_download(vv[0]["url"], "Instagram", original_url)
-                img = carousel[0].get("image_versions2", {}).get("candidates", [])
-                if img:
-                    return await _stream_download(img[0]["url"], "Instagram", original_url)
 
             # Rasm
             img_versions = item.get("image_versions2", {}).get("candidates", [])
@@ -472,10 +478,8 @@ async def _download_story_item(item: dict, original_url: str) -> dict:
     return None
 
 
-async def _stream_download(download_url: str, platform: str, original_url: str) -> dict:
+async def _stream_download(download_url: str, platform: str, original_url: str, item_index: int = 0) -> dict:
     try:
-        file_path = os.path.join(TEMP_DIR, f"{platform.lower()}_{hash(original_url) & 0xFFFFFFFF}.mp4")
-
         async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
             async with client.stream(
                 "GET", download_url,
@@ -483,24 +487,54 @@ async def _stream_download(download_url: str, platform: str, original_url: str) 
             ) as stream:
                 if stream.status_code != 200:
                     return None
+
+                # Content-type dan rasm yoki video ekanini aniqlash
+                content_type = stream.headers.get("content-type", "")
+                is_photo = False
+                ext = ".mp4"
+                if "image/jpeg" in content_type or "image/jpg" in content_type:
+                    ext = ".jpg"
+                    is_photo = True
+                elif "image/png" in content_type:
+                    ext = ".png"
+                    is_photo = True
+                elif "image/webp" in content_type:
+                    ext = ".webp"
+                    is_photo = True
+                elif "image/gif" in content_type:
+                    ext = ".gif"
+
+                # URL dan ham tekshirish (content-type noto'g'ri bo'lsa)
+                url_lower = download_url.lower().split("?")[0]
+                if not is_photo and ext == ".mp4":
+                    for img_ext in (".jpg", ".jpeg", ".png", ".webp"):
+                        if url_lower.endswith(img_ext):
+                            ext = img_ext if img_ext != ".jpeg" else ".jpg"
+                            is_photo = True
+                            break
+
+                suffix = f"_{item_index}" if item_index else ""
+                file_path = os.path.join(TEMP_DIR, f"{platform.lower()}_{hash(original_url) & 0xFFFFFFFF}{suffix}{ext}")
+
                 with open(file_path, "wb") as f:
                     async for chunk in stream.aiter_bytes(chunk_size=65536):
                         f.write(chunk)
 
         filesize = os.path.getsize(file_path)
-        if filesize < 1000:
+        if filesize < 500:
             os.unlink(file_path)
             return None
 
         return {
             'file_path': file_path,
-            'title': f'{platform} Video',
+            'title': f'{platform} {"Photo" if is_photo else "Video"}',
             'duration': 0,
             'filesize': filesize,
             'thumbnail': '',
             'platform': platform,
             'width': 0,
             'height': 0,
+            'is_photo': is_photo,
         }
     except Exception as e:
         logger.error(f"[stream_download] xatolik: {e}")
