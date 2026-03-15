@@ -132,6 +132,12 @@ async def download_video(url: str) -> dict:
                 logger.info(f"[Pinterest] yuklandi")
                 return result
 
+        if platform == "Snapchat":
+            result = await _download_snapchat(url)
+            if result:
+                logger.info(f"[Snapchat] yuklandi")
+                return result
+
         # 3. yt-dlp + bgutil PO token
         try:
             result = await asyncio.get_event_loop().run_in_executor(
@@ -257,6 +263,36 @@ async def _download_pinterest(url: str) -> dict:
 
     except Exception as e:
         logger.error(f"[Pinterest] xatolik: {e}")
+    return None
+
+
+async def _download_snapchat(url: str) -> dict:
+    """Snapchat Spotlight/Story video yuklash — HTML dan bolt-gcdn URL olish"""
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            })
+            if resp.status_code != 200:
+                logger.warning(f"[Snapchat] HTTP {resp.status_code}")
+                return None
+
+            html = resp.text
+
+            # bolt-gcdn video URL larni topish (.27. = video, .256. = thumbnail)
+            video_urls = re.findall(
+                r'(https://bolt-gcdn\.sc-cdn\.net/[^\s"<>]+\.27\.[^\s"<>]+)', html
+            )
+            if not video_urls:
+                logger.warning("[Snapchat] Video URL topilmadi")
+                return None
+
+            # Birinchi video = maqsadli video
+            video_url = video_urls[0]
+            return await _stream_download(video_url, "Snapchat", url)
+
+    except Exception as e:
+        logger.error(f"[Snapchat] xatolik: {e}")
     return None
 
 
