@@ -115,15 +115,7 @@ def _yt_base_opts(use_proxy=False):
         opts['proxy'] = WARP_PROXY
         opts['nocheckcertificate'] = True
         opts['legacy_server_connect'] = True
-        opts['external_downloader'] = 'aria2c'
-        opts['external_downloader_args'] = {
-            'aria2c': [
-                '-x', '16', '-k', '1M', '-j', '16',
-                '--all-proxy', WARP_PROXY,
-                '--check-certificate=false',
-                '--max-tries=5', '--retry-wait=2',
-            ]
-        }
+        opts['concurrent_fragment_downloads'] = 16
     return opts
 
 
