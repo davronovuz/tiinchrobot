@@ -112,6 +112,8 @@ def _yt_base_opts(use_proxy=False):
     }
     if use_proxy:
         opts['proxy'] = WARP_PROXY
+        opts['nocheckcertificate'] = True
+        opts['legacy_server_connect'] = True
     return opts
 
 
@@ -130,15 +132,16 @@ def _get_ydl_opts_search(max_results=20):
 
 def _get_ydl_opts_download(tmp_dir, use_proxy=False):
     """yt-dlp yuklash uchun sozlamalar — m4a to'g'ridan-to'g'ri (konvertatsiyasiz)"""
+    retries = 5 if use_proxy else 3
     opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': os.path.join(tmp_dir, '%(id)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 30,
-        'retries': 3,
-        'fragment_retries': 3,
-        'extractor_retries': 2,
+        'retries': retries,
+        'fragment_retries': retries,
+        'extractor_retries': retries,
     }
     opts.update(_yt_base_opts(use_proxy=use_proxy))
     return opts

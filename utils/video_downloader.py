@@ -79,6 +79,8 @@ def _yt_base_opts(use_proxy=False) -> dict:
     }
     if use_proxy:
         opts['proxy'] = WARP_PROXY
+        opts['nocheckcertificate'] = True
+        opts['legacy_server_connect'] = True
     return opts
 
 
