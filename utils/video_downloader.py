@@ -126,6 +126,12 @@ async def download_video(url: str) -> dict:
                     logger.info(f"[Instagram API] yuklandi")
                     return result
 
+        if platform == "Pinterest":
+            result = await _download_pinterest(url)
+            if result:
+                logger.info(f"[Pinterest] yuklandi")
+                return result
+
         # 3. yt-dlp + bgutil PO token
         try:
             result = await asyncio.get_event_loop().run_in_executor(
@@ -214,6 +220,52 @@ async def _download_cobalt(url: str) -> dict:
         logger.warning("[Cobalt] timeout")
     except Exception as e:
         logger.error(f"[Cobalt] xatolik: {e}")
+    return None
+
+
+async def _download_pinterest(url: str) -> dict:
+    """Pinterest rasm/video yuklash — HTML og:image orqali"""
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            })
+            if resp.status_code != 200:
+                logger.warning(f"[Pinterest] HTTP {resp.status_code}")
+                return None
+
+            html = resp.text
+
+            # og:video bor bo'lsa — video
+            og_video = re.search(r'<meta\s+(?:property="og:video(?::url)?"|content="([^"]+)")[\s/]*(?:property="og:video(?::url)?"|content="([^"]+)")', html)
+            video_url = None
+            if og_video:
+                video_url = og_video.group(1) or og_video.group(2)
+                if video_url and video_url.startswith("http"):
+                    return await _stream_download(video_url, "Pinterest", url)
+
+            # og:image — rasm
+            og_image = re.search(r'<meta\s+(?:property="og:image"|content="([^"]+)")[\s/]*(?:property="og:image"|content="([^"]+)")', html)
+            if not og_image:
+                # boshqa format
+                og_image = re.search(r'property="og:image"\s+content="([^"]+)"', html)
+                if og_image:
+                    image_url = og_image.group(1)
+                else:
+                    return None
+            else:
+                image_url = og_image.group(1) or og_image.group(2)
+
+            if not image_url or not image_url.startswith("http"):
+                return None
+
+            # Eng katta sifat
+            image_url = re.sub(r'/\d+x\d*/', '/originals/', image_url)
+
+            return await _stream_download(image_url, "Pinterest", url)
+
+    except Exception as e:
+        logger.error(f"[Pinterest] xatolik: {e}")
     return None
 
 
@@ -572,6 +624,12 @@ def _download_with_ytdlp(url: str) -> dict:
 
         if platform == "YouTube":
             ydl_opts.update(_yt_base_opts(use_proxy=use_proxy))
+        elif use_proxy:
+            ydl_opts['proxy'] = WARP_PROXY
+            ydl_opts['nocheckcertificate'] = True
+            ydl_opts['legacy_server_connect'] = True
+            if os.path.exists(COOKIES_FILE):
+                ydl_opts['cookiefile'] = COOKIES_FILE
         else:
             if os.path.exists(COOKIES_FILE):
                 ydl_opts['cookiefile'] = COOKIES_FILE
@@ -610,18 +668,13 @@ def _download_with_ytdlp(url: str) -> dict:
         if result:
             return result
     except Exception as e:
-        if platform == "YouTube":
-            logger.info(f"[yt-dlp] Proxysiz xato, WARP fallback: {e}")
-        else:
-            logger.error(f"[yt-dlp] {platform} xatosi: {e}", exc_info=True)
-            return None
+        logger.info(f"[yt-dlp] {platform} proxysiz xato, WARP fallback: {e}")
 
-    # 2. YouTube bloklangan bo'lsa — WARP proxy bilan
-    if platform == "YouTube":
-        try:
-            return _try_download(use_proxy=True)
-        except Exception as e:
-            logger.error(f"[yt-dlp] YouTube proxy bilan ham xato: {e}", exc_info=True)
+    # 2. IP bloklangan bo'lsa — WARP proxy bilan
+    try:
+        return _try_download(use_proxy=True)
+    except Exception as e:
+        logger.error(f"[yt-dlp] {platform} proxy bilan ham xato: {e}", exc_info=True)
 
     return None
 
