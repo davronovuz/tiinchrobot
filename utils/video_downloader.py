@@ -65,8 +65,9 @@ WARP_PROXY = "socks5://warp:9091"
 
 
 def _yt_base_opts(use_proxy=False) -> dict:
-    """YouTube uchun umumiy yt-dlp opsiyalari — android_vr + bgutil"""
+    """YouTube uchun umumiy yt-dlp opsiyalari — android_vr + bgutil + aria2c"""
     opts = {
+        'concurrent_fragment_downloads': 8,
         'extractor_args': {
             'youtube': {
                 'player_client': ['android_vr'],
@@ -81,6 +82,16 @@ def _yt_base_opts(use_proxy=False) -> dict:
         opts['proxy'] = WARP_PROXY
         opts['nocheckcertificate'] = True
         opts['legacy_server_connect'] = True
+        # aria2c — 16 parallel ulanish, proxy orqali
+        opts['external_downloader'] = 'aria2c'
+        opts['external_downloader_args'] = {
+            'aria2c': [
+                '-x', '16', '-k', '1M', '-j', '16',
+                '--all-proxy', WARP_PROXY,
+                '--check-certificate=false',
+                '--max-tries=5', '--retry-wait=2',
+            ]
+        }
     return opts
 
 

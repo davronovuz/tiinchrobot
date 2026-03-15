@@ -98,8 +98,9 @@ user_results = {}
 # =====================================================
 
 def _yt_base_opts(use_proxy=False):
-    """YouTube uchun umumiy opsiyalar — android_vr + bgutil"""
+    """YouTube uchun umumiy opsiyalar — android_vr + bgutil + aria2c"""
     opts = {
+        'concurrent_fragment_downloads': 8,
         'extractor_args': {
             'youtube': {
                 'player_client': ['android_vr'],
@@ -114,6 +115,15 @@ def _yt_base_opts(use_proxy=False):
         opts['proxy'] = WARP_PROXY
         opts['nocheckcertificate'] = True
         opts['legacy_server_connect'] = True
+        opts['external_downloader'] = 'aria2c'
+        opts['external_downloader_args'] = {
+            'aria2c': [
+                '-x', '16', '-k', '1M', '-j', '16',
+                '--all-proxy', WARP_PROXY,
+                '--check-certificate=false',
+                '--max-tries=5', '--retry-wait=2',
+            ]
+        }
     return opts
 
 
