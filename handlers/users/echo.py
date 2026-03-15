@@ -9,7 +9,8 @@ from utils.video_downloader import (
     download_video, cleanup_file, is_supported_url, get_platform_from_url,
     get_youtube_formats, download_youtube_with_format, make_url_hash, get_cached_yt_url,
 )
-from utils.pyrogram_client import send_large_video, pyro_client
+from utils.pyrogram_client import send_large_video
+from utils import pyrogram_client as _pyro_mod
 from keyboards.inline.quality_kb import youtube_quality_keyboard
 
 FILE_SIZE_LIMIT = 50 * 1024 * 1024  # 50MB (aiogram limiti)
@@ -231,8 +232,8 @@ async def _shazam_from_video(chat_id: int, file_id: str):
             file_info = await bot.get_file(file_id)
             await bot.download_file(file_info.file_path, destination=video_path)
         except Exception:
-            if pyro_client:
-                await pyro_client.download_media(file_id, file_name=video_path)
+            if _pyro_mod.pyro_client:
+                await _pyro_mod.pyro_client.download_media(file_id, file_name=video_path)
             else:
                 await status_msg.edit_text("⚠️ Video juda katta, yuklab bo'lmadi.")
                 return
@@ -333,10 +334,10 @@ async def _send_result(
         return
 
     if is_audio:
-        if file_size > FILE_SIZE_LIMIT and pyro_client:
+        if file_size > FILE_SIZE_LIMIT and _pyro_mod.pyro_client:
             size_mb = file_size // (1024 * 1024)
             await status_message.edit_text(f"📤 Audio yuborilmoqda ({size_mb}MB)...")
-            msg = await pyro_client.send_audio(
+            msg = await _pyro_mod.pyro_client.send_audio(
                 chat_id=chat_id, audio=file_path,
                 caption=caption, duration=duration, title=title,
             )
@@ -364,7 +365,7 @@ async def _send_result(
     # Video yuborish
     _sent_video_file_id = None
     if file_size > FILE_SIZE_LIMIT:
-        if pyro_client:
+        if _pyro_mod.pyro_client:
             size_mb = file_size // (1024 * 1024)
             await status_message.edit_text(f"📤 Katta fayl yuborilmoqda ({size_mb}MB)...")
             file_id = await send_large_video(

@@ -652,8 +652,10 @@ def _extract_youtube_formats(url: str) -> dict:
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
-            'socket_timeout': 20,
+            'socket_timeout': 30,
             'skip_download': True,
+            'retries': 5 if use_proxy else 3,
+            'extractor_retries': 5 if use_proxy else 2,
         }
         ydl_opts.update(_yt_base_opts(use_proxy=use_proxy))
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
