@@ -15,18 +15,17 @@ async def bot_start(message: types.Message):
         await user_db.update_user_last_active(telegram_id=telegram_id)
 
     welcome_text = (
-        f"Salom, <b>{message.from_user.full_name}</b>\n\n"
-        "<b>Tinch Robot</b> — tinch ishlaydi.\n\n"
-        "Havolani tashlang, qolgani bizda:\n\n"
-        "  YouTube\n"
-        "  Instagram\n"
-        "  TikTok\n"
-        "  Pinterest\n"
-        "  Snapchat\n"
-        "  Facebook\n"
-        "  Twitter / X\n\n"
-        "Musiqa qidirish — qo'shiq nomini yozing.\n"
-        "Musiqa aniqlash — audio/video yuboring.\n\n"
-        "<i>Havola yuboring — natija olasiz.</i>"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "  🕊️ TINCH ROBOT\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👋 Salom, <b>{message.from_user.full_name}</b>!\n\n"
+        "🔗 Havolani tashlang:\n"
+        "   YouTube · Instagram · TikTok\n"
+        "   Pinterest · Snapchat · Facebook · X\n\n"
+        "🔍 Musiqa qidirish:\n"
+        "   Qo'shiq nomini yozing\n\n"
+        "🎵 Musiqa aniqlash:\n"
+        "   Audio yoki video yuboring\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━"
     )
     await message.answer(welcome_text, parse_mode="HTML")
