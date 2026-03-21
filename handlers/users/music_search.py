@@ -3,7 +3,9 @@ import os
 import tempfile
 import shutil
 import logging
+import time
 from io import BytesIO
+from collections import defaultdict
 
 import httpx
 from aiogram import types
@@ -22,6 +24,26 @@ logger = logging.getLogger(__name__)
 
 BGUTIL_URL = os.getenv("BGUTIL_URL", "http://bgutil:4416")
 WARP_PROXY = "socks5://warp:9091"
+
+# =====================================================
+# Rate limiter — foydalanuvchi boshiga yuklash cheklovi
+# =====================================================
+_user_download_times = defaultdict(list)
+_USER_RATE_LIMIT = 5         # max yuklashlar
+_USER_RATE_WINDOW = 60       # sekund ichida
+_download_semaphore = asyncio.Semaphore(10)  # bir vaqtda max 10 ta yuklash
+
+
+def _check_rate_limit(user_id: int) -> bool:
+    """Foydalanuvchi rate limitdan o'tganmi tekshirish. True = ruxsat"""
+    now = time.monotonic()
+    times = _user_download_times[user_id]
+    # Eski yozuvlarni tozalash
+    _user_download_times[user_id] = [t for t in times if now - t < _USER_RATE_WINDOW]
+    if len(_user_download_times[user_id]) >= _USER_RATE_LIMIT:
+        return False
+    _user_download_times[user_id].append(now)
+    return True
 
 
 # =====================================================
@@ -186,13 +208,14 @@ async def search_music_deezer(query, max_results=20):
 
 
 async def search_music_youtube(query, max_results=20):
-    """YouTube dan musiqa qidirish — fallback"""
+    """YouTube dan musiqa qidirish — tez va ishonchli"""
     results = []
     try:
         import yt_dlp
         ydl_opts = _get_ydl_opts_search(max_results)
 
         def _search():
+            _results = []
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 data = ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)
                 if data and 'entries' in data:
@@ -205,7 +228,10 @@ async def search_music_youtube(query, max_results=20):
                             continue
                         uploader = entry.get('uploader', entry.get('channel', ''))
                         duration = entry.get('duration') or 0
-                        results.append({
+                        # Juda uzun videolarni o'tkazib yuborish (15 daqiqadan oshsa)
+                        if duration and int(duration) > 900:
+                            continue
+                        _results.append({
                             "title": title,
                             "artist": uploader or "YouTube",
                             "url": f"https://www.youtube.com/watch?v={video_id}",
@@ -213,21 +239,50 @@ async def search_music_youtube(query, max_results=20):
                             "type": "ytdlp",
                             "duration": int(duration),
                         })
-            return results
+            return _results
 
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, _search)
+        results = await asyncio.wait_for(
+            loop.run_in_executor(None, _search),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"YouTube qidiruv timeout: {query}")
     except Exception as e:
         logger.error(f"YouTube qidiruvda xatolik: {e}")
     return results
 
 
 async def search_music(query):
-    """Deezer dan qidirish, bo'sh bo'lsa YouTube fallback"""
-    results = await search_music_deezer(query, max_results=20)
-    if not results:
-        results = await search_music_youtube(query, max_results=20)
-    return results
+    """Deezer + YouTube parallel qidiruv, natijalar birlashtiriladi va deduplikatsiya"""
+    deezer_task = asyncio.create_task(search_music_deezer(query, max_results=15))
+    youtube_task = asyncio.create_task(search_music_youtube(query, max_results=10))
+
+    deezer_results, youtube_results = await asyncio.gather(
+        deezer_task, youtube_task, return_exceptions=True
+    )
+
+    if isinstance(deezer_results, Exception):
+        logger.error(f"Deezer qidiruv xatosi: {deezer_results}")
+        deezer_results = []
+    if isinstance(youtube_results, Exception):
+        logger.error(f"YouTube qidiruv xatosi: {youtube_results}")
+        youtube_results = []
+
+    # Birlashtirib deduplikatsiya (Deezer natijalar birinchi)
+    combined = list(deezer_results)
+    seen_titles = set()
+    for r in combined:
+        key = f"{r.get('artist', '').lower().strip()} {r.get('title', '').lower().strip()}"
+        seen_titles.add(key)
+
+    for r in youtube_results:
+        key = f"{r.get('artist', '').lower().strip()} {r.get('title', '').lower().strip()}"
+        if key not in seen_titles:
+            combined.append(r)
+            seen_titles.add(key)
+
+    return combined[:20]
 
 
 # =====================================================
@@ -238,7 +293,7 @@ async def _download_audio_cobalt(url: str, tmp_dir: str) -> tuple:
     """Cobalt API orqali audio yuklash (tez va ishonchli)"""
     cobalt_url = os.getenv("COBALT_API_URL", "http://cobalt:9000")
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             resp = await client.post(
                 cobalt_url,
                 json={
@@ -315,7 +370,7 @@ def _normalize_cache_key(artist: str, title: str) -> str:
 
 
 async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", artist_hint: str = ""):
-    """Musiqa yuklab yuborish — cache -> YouTube (proxysiz -> proxy fallback)"""
+    """Musiqa yuklab yuborish — cache -> Cobalt -> YouTube (proxysiz -> proxy fallback)"""
     caption = "✨ @tinchrobot – Tinchlikni xohlovchilar uchun!"
 
     # 1. Normalized cache tekshirish (artist+title bo'yicha)
@@ -323,15 +378,21 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
         cache_key = _normalize_cache_key(artist_hint, title_hint)
         cached = await cache_db.get_file_id_by_url(cache_key)
         if cached:
-            await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
-            return True
+            try:
+                await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
+                return True
+            except Exception:
+                await cache_db.delete_cache_by_url(cache_key)
 
     # 2. URL bo'yicha cache
     if not url.startswith("deezer:"):
         cached = await cache_db.get_file_id_by_url(url)
         if cached:
-            await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
-            return True
+            try:
+                await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
+                return True
+            except Exception:
+                await cache_db.delete_cache_by_url(url)
 
     # 3. Deezer URL bo'lsa — YouTube dan qidirish kerak
     yt_url = url
@@ -339,7 +400,7 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
         search_q = f"{artist_hint} {title_hint}".strip()
         if not search_q:
             return False
-        yt_results = await search_music_youtube(search_q, max_results=3)
+        yt_results = await search_music_youtube(search_q, max_results=5)
         if not yt_results:
             return False
         yt_url = yt_results[0]["url"]
@@ -347,48 +408,70 @@ async def download_and_send_audio(chat_id: int, url: str, title_hint: str = "", 
         # YouTube URL bo'yicha ham cache tekshirish
         cached = await cache_db.get_file_id_by_url(yt_url)
         if cached:
-            await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
-            # Normalized cache ham saqlash
-            if title_hint and artist_hint:
-                await cache_db.add_cache("youtube", _normalize_cache_key(artist_hint, title_hint), cached["file_id"], "audio")
-            return True
+            try:
+                await bot.send_audio(chat_id=chat_id, audio=cached["file_id"], caption=caption)
+                if title_hint and artist_hint:
+                    await cache_db.add_cache("youtube", _normalize_cache_key(artist_hint, title_hint), cached["file_id"], "audio")
+                return True
+            except Exception:
+                await cache_db.delete_cache_by_url(yt_url)
 
     tmp_dir = tempfile.mkdtemp(prefix="ytmusic_")
     try:
         info = None
         file_path = None
-        import yt_dlp
 
-        def _yt_download(use_proxy=False):
-            ydl_opts = _get_ydl_opts_download(tmp_dir, use_proxy=use_proxy)
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                _info = ydl.extract_info(yt_url, download=True)
-                if _info is None:
-                    return None, None
-                _file_path = ydl.prepare_filename(_info)
-                if not os.path.exists(_file_path):
-                    base, _ = os.path.splitext(_file_path)
-                    for ext in ['.m4a', '.mp3', '.webm', '.opus']:
-                        candidate = base + ext
-                        if os.path.exists(candidate):
-                            _file_path = candidate
-                            break
-                return _info, _file_path
+        # 4. Cobalt API orqali yuklash (tez — semaphoresiz, Cobalt o'zi cheklaydi)
+        cobalt_info, cobalt_path = await _download_audio_cobalt(yt_url, tmp_dir)
+        if cobalt_info and cobalt_path and os.path.exists(cobalt_path):
+            info = cobalt_info
+            file_path = cobalt_path
+            logger.info(f"[Music] Cobalt orqali yuklandi: {yt_url}")
 
-        loop = asyncio.get_event_loop()
+        # 5. yt-dlp fallback (Cobalt ishlamasa) — semaphore bilan
+        if not file_path or not os.path.exists(str(file_path) if file_path else ''):
+            async with _download_semaphore:
+                import yt_dlp
 
-        # Proxysiz (tez)
-        try:
-            info, file_path = await loop.run_in_executor(None, lambda: _yt_download(False))
-        except Exception:
-            info, file_path = None, None
+                def _yt_download(use_proxy=False):
+                    ydl_opts = _get_ydl_opts_download(tmp_dir, use_proxy=use_proxy)
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        _info = ydl.extract_info(yt_url, download=True)
+                        if _info is None:
+                            return None, None
+                        _file_path = ydl.prepare_filename(_info)
+                        if not os.path.exists(_file_path):
+                            base, _ = os.path.splitext(_file_path)
+                            for ext in ['.m4a', '.mp3', '.webm', '.opus']:
+                                candidate = base + ext
+                                if os.path.exists(candidate):
+                                    _file_path = candidate
+                                    break
+                        return _info, _file_path
 
-        # WARP proxy fallback
-        if not info or not file_path or not os.path.exists(str(file_path) if file_path else ''):
-            try:
-                info, file_path = await loop.run_in_executor(None, lambda: _yt_download(True))
-            except Exception:
-                info, file_path = None, None
+                loop = asyncio.get_event_loop()
+
+                # Proxysiz (tez)
+                try:
+                    info, file_path = await loop.run_in_executor(None, lambda: _yt_download(False))
+                except Exception as e:
+                    logger.info(f"[Music yt-dlp] proxysiz xato: {e}")
+                    info, file_path = None, None
+
+                # WARP proxy fallback (2 marta urinish)
+                if not info or not file_path or not os.path.exists(str(file_path) if file_path else ''):
+                    for attempt in range(2):
+                        try:
+                            info, file_path = await loop.run_in_executor(None, lambda: _yt_download(True))
+                            if info and file_path and os.path.exists(file_path):
+                                break
+                        except Exception as e:
+                            if attempt == 0:
+                                logger.info(f"[Music yt-dlp] WARP 1-urinish xato: {e}")
+                                await asyncio.sleep(1)
+                            else:
+                                logger.error(f"[Music yt-dlp] WARP 2-urinish ham xato: {e}")
+                            info, file_path = None, None
 
         if not info or not file_path or not os.path.exists(file_path):
             return False
@@ -713,9 +796,17 @@ async def handle_message(message: types.Message):
         await message.reply("Iltimos, qidiruv so'zini kiriting.")
         return
 
+    if len(search_query) > 200:
+        await message.reply("⚠️ Qidiruv so'zi juda uzun. 200 belgigacha kiriting.")
+        return
+
     status_msg = await message.reply("🔍 Qidirilmoqda...")
 
-    all_results = await search_music(search_query)
+    try:
+        all_results = await asyncio.wait_for(search_music(search_query), timeout=30)
+    except asyncio.TimeoutError:
+        await status_msg.edit_text("⏳ Qidiruv uzoq davom etdi. Qayta urinib ko'ring.")
+        return
 
     if all_results:
         user_results[message.chat.id] = {
@@ -853,6 +944,15 @@ async def download_callback_handler(callback_query: CallbackQuery):
         _, result_id_str, chat_id_str = data_parts
         result_id = int(result_id_str)
         chat_id = int(chat_id_str)
+
+        # Rate limit tekshirish
+        user_id = callback_query.from_user.id
+        if not _check_rate_limit(user_id):
+            await callback_query.answer(
+                f"⏳ Juda tez! {_USER_RATE_WINDOW} sekund ichida {_USER_RATE_LIMIT} ta yuklay olasiz.",
+                show_alert=True,
+            )
+            return
 
         user_data = user_results.get(chat_id)
         if user_data and 0 <= result_id < len(user_data["results"]):

@@ -10,10 +10,30 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-MAX_CONCURRENT_DOWNLOADS = 8
+MAX_CONCURRENT_DOWNLOADS = 12
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 TEMP_DIR = tempfile.mkdtemp(prefix="tiinchbot_")
+
+# Temp fayllar uchun max yosh (5 daqiqa)
+_TEMP_MAX_AGE = 300
+
+
+def _cleanup_old_temp_files():
+    """5 daqiqadan eski temp fayllarni o'chirish"""
+    try:
+        now = time.time()
+        for f in os.listdir(TEMP_DIR):
+            filepath = os.path.join(TEMP_DIR, f)
+            if os.path.isfile(filepath):
+                age = now - os.path.getmtime(filepath)
+                if age > _TEMP_MAX_AGE:
+                    try:
+                        os.unlink(filepath)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
 
 # YouTube URL va format ma'lumotlarini vaqtincha saqlash
 _yt_format_cache = {}
@@ -94,6 +114,9 @@ async def download_video(url: str) -> dict:
     2. Platformaga xos API
     3. yt-dlp + bgutil PO token
     """
+    # Eski temp fayllarni tozalash (har safar)
+    _cleanup_old_temp_files()
+
     async with download_semaphore:
         platform = get_platform_from_url(url)
         start_time = time.monotonic()
@@ -697,19 +720,20 @@ def _download_with_ytdlp(url: str) -> dict:
     except Exception as e:
         logger.info(f"[yt-dlp] {platform} proxysiz xato, WARP fallback: {e}")
 
-    # 2. IP bloklangan bo'lsa — WARP proxy bilan (2 marta urinish)
-    for attempt in range(2):
+    # 2. IP bloklangan bo'lsa — WARP proxy bilan (3 marta urinish, exponential backoff)
+    for attempt in range(3):
         try:
             result = _try_download(use_proxy=True)
             if result:
                 return result
         except Exception as e:
-            if attempt == 0:
-                logger.info(f"[yt-dlp] {platform} WARP 1-urinish xato, qayta: {e}")
+            if attempt < 2:
+                wait_time = (attempt + 1) * 2  # 2s, 4s
+                logger.info(f"[yt-dlp] {platform} WARP {attempt+1}-urinish xato, {wait_time}s kutish: {e}")
                 import time as _time
-                _time.sleep(2)
+                _time.sleep(wait_time)
             else:
-                logger.error(f"[yt-dlp] {platform} WARP 2-urinish ham xato: {e}")
+                logger.error(f"[yt-dlp] {platform} WARP 3-urinish ham xato: {e}")
 
     return None
 
@@ -892,7 +916,7 @@ async def download_youtube_with_format(url_hash: str, format_id: str) -> dict:
 
     url = cache_entry["url"]
 
-    if time.monotonic() - cache_entry["timestamp"] > 300:
+    if time.monotonic() - cache_entry["timestamp"] > 600:
         _yt_format_cache.pop(url_hash, None)
         return None
 
@@ -921,6 +945,7 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
 
     def _try(use_proxy=False):
         output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
+        retries = 5 if use_proxy else 3
         ydl_opts = {
             'outtmpl': output_template,
             'format': f"{format_id}/bestvideo+bestaudio/best",
@@ -929,10 +954,10 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
-            'retries': 3,
-            'fragment_retries': 3,
-            'file_access_retries': 3,
-            'extractor_retries': 2,
+            'retries': retries,
+            'fragment_retries': retries,
+            'file_access_retries': retries,
+            'extractor_retries': retries,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
             },
@@ -971,6 +996,7 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
                 'height': info.get('height', 0),
             }
 
+    # Proxysiz
     try:
         result = _try(use_proxy=False)
         if result:
@@ -978,11 +1004,21 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
     except Exception:
         pass
 
-    try:
-        return _try(use_proxy=True)
-    except Exception as e:
-        logger.error(f"[YouTube format download] xatosi: {e}", exc_info=True)
-        return None
+    # WARP proxy — 2 marta urinish
+    for attempt in range(2):
+        try:
+            result = _try(use_proxy=True)
+            if result:
+                return result
+        except Exception as e:
+            if attempt == 0:
+                logger.info(f"[YouTube format] WARP 1-urinish xato: {e}")
+                import time as _time
+                _time.sleep(2)
+            else:
+                logger.error(f"[YouTube format] WARP 2-urinish ham xato: {e}", exc_info=True)
+
+    return None
 
 
 def _download_youtube_audio(url: str) -> dict:
@@ -990,6 +1026,7 @@ def _download_youtube_audio(url: str) -> dict:
 
     def _try(use_proxy=False):
         output_template = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
+        retries = 5 if use_proxy else 3
         ydl_opts = {
             'outtmpl': output_template,
             'format': 'bestaudio[ext=m4a]/bestaudio/best',
@@ -997,8 +1034,10 @@ def _download_youtube_audio(url: str) -> dict:
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
-            'retries': 3,
-            'fragment_retries': 3,
+            'retries': retries,
+            'fragment_retries': retries,
+            'file_access_retries': retries,
+            'extractor_retries': retries,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
             },
@@ -1038,6 +1077,7 @@ def _download_youtube_audio(url: str) -> dict:
                 'is_audio': True,
             }
 
+    # Proxysiz
     try:
         result = _try(use_proxy=False)
         if result:
@@ -1045,11 +1085,21 @@ def _download_youtube_audio(url: str) -> dict:
     except Exception:
         pass
 
-    try:
-        return _try(use_proxy=True)
-    except Exception as e:
-        logger.error(f"[YouTube audio] xatosi: {e}", exc_info=True)
-        return None
+    # WARP proxy — 2 marta urinish
+    for attempt in range(2):
+        try:
+            result = _try(use_proxy=True)
+            if result:
+                return result
+        except Exception as e:
+            if attempt == 0:
+                logger.info(f"[YouTube audio] WARP 1-urinish xato: {e}")
+                import time as _time
+                _time.sleep(2)
+            else:
+                logger.error(f"[YouTube audio] WARP 2-urinish ham xato: {e}", exc_info=True)
+
+    return None
 
 
 def get_cached_yt_url(url_hash: str) -> str:
