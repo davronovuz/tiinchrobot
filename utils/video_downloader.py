@@ -158,7 +158,10 @@ def _yt_base_opts(use_proxy=False) -> dict:
         'http_chunk_size': 10 * 1024 * 1024,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_vr'],
+                # tv_embedded — serverda sinovdan o'tkazilgan yagona ishlaydigan client.
+                # android_vr atigi 1 ta format qaytaradi, boshqalari "No video formats
+                # found"; ikkalasini birga berish ham natijani buzadi (2026-08-31 test).
+                'player_client': ['tv_embedded'],
                 'player_skip': [],
             },
             'youtubepot-bgutilhttp': {
