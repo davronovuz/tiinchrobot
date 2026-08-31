@@ -12,6 +12,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
+# Telegram limiti: local Bot API bilan 2GB. Bundan kattasini yuklash bekorga
+# ketadi — shuning uchun yt-dlp ga ham, stream yuklashga ham qattiq chegara qo'yamiz.
+MAX_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024
+
 MAX_CONCURRENT_DOWNLOADS = 12
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
@@ -837,9 +841,30 @@ async def _stream_download(download_url: str, platform: str, original_url: str, 
                 suffix = f"_{item_index}" if item_index else ""
                 file_path = os.path.join(TEMP_DIR, f"{platform.lower()}_{hash(original_url) & 0xFFFFFFFF}{suffix}{ext}")
 
+                # Content-Length ma'lum bo'lsa oldindan rad etamiz
+                clen = stream.headers.get("content-length")
+                if clen and clen.isdigit() and int(clen) > MAX_UPLOAD_SIZE:
+                    logger.warning(f"[stream_download] fayl juda katta: {int(clen)//1048576}MB, bekor qilindi")
+                    return None
+
+                written = 0
+                too_big = False
                 with open(file_path, "wb") as f:
                     async for chunk in stream.aiter_bytes(chunk_size=65536):
+                        written += len(chunk)
+                        # Hajm oshib ketsa yuklashni to'xtatamiz (bekorga trafik sarflamaymiz)
+                        if written > MAX_UPLOAD_SIZE:
+                            too_big = True
+                            break
                         f.write(chunk)
+
+                if too_big:
+                    logger.warning("[stream_download] limitdan oshdi, yuklash to'xtatildi")
+                    try:
+                        os.unlink(file_path)
+                    except Exception:
+                        pass
+                    return None
 
         filesize = os.path.getsize(file_path)
         if filesize < 500:
@@ -872,7 +897,14 @@ def _download_with_ytdlp(url: str) -> dict:
     def _try_download(use_proxy=False):
         ydl_opts = {
             'outtmpl': output_template,
-            'format': 'bestvideo[height<=1080][filesize<2G]+bestaudio/best[height<=1080][filesize<2G]/best',
+            # Sifat bosqichma-bosqich pasayadi — oxirgi chora ham 480p bilan cheklangan,
+            # chegarasiz 'best' YO'Q (avval 3GB fayl yuklanib, keyin tashlanardi).
+            'format': (
+                'bestvideo[height<=1080]+bestaudio/best[height<=1080]/'
+                'bestvideo[height<=720]+bestaudio/best[height<=720]/'
+                'bestvideo[height<=480]+bestaudio/best[height<=480]/best[height<=480]'
+            ),
+            'max_filesize': MAX_UPLOAD_SIZE,
             'merge_output_format': 'mp4',
             'noplaylist': True,
             'quiet': True,
@@ -1214,7 +1246,8 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
         retries = 5 if use_proxy else 3
         ydl_opts = {
             'outtmpl': output_template,
-            'format': f"{format_id}/bestvideo+bestaudio/best",
+            'format': f"{format_id}/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+            'max_filesize': MAX_UPLOAD_SIZE,
             'merge_output_format': 'mp4',
             'noplaylist': True,
             'quiet': True,
@@ -1296,6 +1329,7 @@ def _download_youtube_audio(url: str) -> dict:
         ydl_opts = {
             'outtmpl': output_template,
             'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'max_filesize': MAX_UPLOAD_SIZE,
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
