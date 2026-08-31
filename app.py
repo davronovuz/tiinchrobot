@@ -1,3 +1,5 @@
+import asyncio
+
 try:
     import uvloop
     uvloop.install()
@@ -7,6 +9,12 @@ except ImportError:
 from aiogram import executor
 import redis.asyncio as aioredis
 import logging
+
+# uvloop policy'da get_event_loop() avtomatik loop yaratmaydi, aiogram importi esa
+# joriy loop'ni tozalab yuboradi. Pyrogram import paytida get_event_loop() chaqiradi
+# (pyrogram/sync.py) — shuning uchun loop'ni AYNAN shu yerda o'rnatamiz:
+# aiogram importidan keyin, loader/handlers importidan oldin.
+asyncio.set_event_loop(asyncio.new_event_loop())
 
 from loader import dp, db, cache_db, user_db, group_db, channel_db
 import middlewares, filters, handlers
