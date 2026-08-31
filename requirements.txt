@@ -13,7 +13,7 @@ exceptiongroup==1.2.2
 frozenlist==1.5.0
 h11==0.14.0
 httpcore==1.0.6
-httpx==0.27.2
+httpx[socks]==0.27.2
 idna==3.10
 lxml==5.3.0
 magic-filter==1.0.12
@@ -44,6 +44,13 @@ bgutil-ytdlp-pot-provider
 # Shazam (musiqa aniqlash)
 shazamio>=0.7.0
 
-# Pyrogram (katta fayllar uchun MTProto)
+# Pyrogram (katta fayllar uchun MTProto — local Bot API bo'lmasa zaxira)
 pyrogram==2.0.106
 tgcrypto==1.2.5
+
+# Tezlik
+uvloop>=0.19.0
+h2>=4.1.0
+
+# YouTube Music qidiruv (tez ichki API)
+ytmusicapi>=1.8.0

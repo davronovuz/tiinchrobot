@@ -72,6 +72,16 @@ class MediaCacheDatabase:
             return data
         return None
 
+    async def search_music_cache(self, query: str, limit: int = 20):
+        """Inline mode uchun: cache'dagi musiqalarni nomi bo'yicha qidirish"""
+        sql = """
+        SELECT url, file_id FROM MediaCache
+        WHERE media_type = 'audio' AND url LIKE 'music:%' AND url ILIKE $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        """
+        return await self.db.execute(sql, f"%{query.lower().strip()}%", limit, fetch=True)
+
     async def get_all_cache(self):
         return await self.db.execute("SELECT * FROM MediaCache", fetch=True)
 

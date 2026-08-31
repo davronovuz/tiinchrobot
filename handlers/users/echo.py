@@ -10,18 +10,60 @@ from utils.video_downloader import (
     get_youtube_formats, download_youtube_with_format, make_url_hash, get_cached_yt_url,
 )
 from utils.pyrogram_client import send_large_video
+from utils.tg_files import sendable, download_tg_file, LOCAL_BOT_API
 from utils import pyrogram_client as _pyro_mod
 from keyboards.inline.quality_kb import youtube_quality_keyboard
 
-FILE_SIZE_LIMIT = 50 * 1024 * 1024  # 50MB (aiogram limiti)
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB (pyrogram limiti)
+# Local Bot API bo'lsa Bot API ning o'zi 2GB gacha yuboradi (Pyrogram dan tez),
+# aks holda 50MB dan katta fayllar Pyrogram MTProto orqali ketadi.
+FILE_SIZE_LIMIT = (2 * 1024 * 1024 * 1024) if LOCAL_BOT_API else (50 * 1024 * 1024)
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
 
-# Video file_id larni vaqtincha saqlash (musiqani yuklash tugmasi uchun)
-_video_file_ids = {}
+from utils import state_store
+
+# Video file_id lari Redis da (musiqani yuklash tugmasi uchun)
+_VIDMUSIC_TTL = 3600
 
 logger = logging.getLogger(__name__)
 
 HTTP_URL_REGEXP = r'^(https?://[^\s]+)$'
+
+
+MUSIC_LINK_DOMAINS = ("open.spotify.com", "spotify.link", "music.apple.com", "deezer.com/track")
+
+
+async def _resolve_music_link(url: str) -> tuple:
+    """Spotify / Apple Music havolasidan artist+title olish (og:title meta)"""
+    import httpx as _httpx
+    try:
+        from utils.video_downloader import get_http_client
+        resp = await get_http_client().get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        }, timeout=15)
+        if resp.status_code != 200:
+            return None, None
+        html = resp.text
+
+        import re as _re
+        title = ""
+        m = _re.search(r'<meta property="og:title" content="([^"]+)"', html)
+        if m:
+            title = m.group(1)
+        artist = ""
+        m2 = _re.search(r'<meta property="og:description" content="([^"]+)"', html)
+        if m2:
+            desc = m2.group(1)
+            # Spotify: "Song · Artist · 2023" / Apple: "Artist · Song · ..."
+            parts = [p.strip() for p in desc.split("·")]
+            if parts:
+                artist = parts[0]
+                if artist.lower().startswith("song"):
+                    artist = parts[1] if len(parts) > 1 else ""
+        return artist, title
+    except Exception as e:
+        logger.error(f"[music link] xatolik: {e}")
+    return None, None
 
 
 def _is_youtube_url(url: str) -> bool:
@@ -39,6 +81,24 @@ async def handle_media_request(message: types.Message):
             "Quyidagi platformalar ishlaydi: Instagram, TikTok, YouTube, "
             "Facebook, Twitter/X, Vimeo, Reddit, Pinterest"
         )
+        return
+
+    # Spotify / Apple Music havolasi — musiqa pipeline'iga
+    if any(d in url.lower() for d in MUSIC_LINK_DOMAINS):
+        from handlers.users.music_search import download_and_send_audio
+        status = await message.reply("🎵 Musiqa qidirilmoqda...")
+        artist, title = await _resolve_music_link(url)
+        if title:
+            ok = await download_and_send_audio(
+                message.chat.id, f"deezer:0", title_hint=title, artist_hint=artist or "",
+            )
+            if ok:
+                try:
+                    await status.delete()
+                except Exception:
+                    pass
+                return
+        await status.edit_text("⚠️ Bu havoladan musiqani topib bo'lmadi. Qo'shiq nomini yozib yuboring.")
         return
 
     platform = get_platform_from_url(url)
@@ -104,7 +164,7 @@ async def _handle_youtube_quality_selection(message: types.Message, url: str, pl
 async def handle_video_music_callback(callback: types.CallbackQuery):
     """Video dan musiqani aniqlash va yuklash"""
     short_key = callback.data.split(":", 1)[1]
-    vid_file_id = _video_file_ids.pop(short_key, None)
+    vid_file_id = await state_store.pop_state(f"vidmusic:{short_key}")
 
     if not vid_file_id:
         await callback.answer("Ma'lumot eskirgan. Videoni qayta yuboring.")
@@ -132,7 +192,7 @@ async def handle_youtube_quality_callback(callback: types.CallbackQuery):
         return
 
     _, url_hash, format_id = parts
-    url = get_cached_yt_url(url_hash)
+    url = await get_cached_yt_url(url_hash)
     if not url:
         await callback.message.edit_text("⏳ Havola muddati tugagan. Qayta yuboring.")
         return
@@ -236,7 +296,7 @@ async def _shazam_from_video(chat_id: int, file_id: str):
     import shutil as _shutil
     from handlers.users.music_search import (
         extract_audio_from_video, recognize_audio_shazam,
-        download_and_send_audio, search_music_youtube,
+        download_and_send_audio, search_music_youtube_fast,
     )
 
     status_msg = await bot.send_message(chat_id, "🎵 Musiqa aniqlanmoqda...")
@@ -246,8 +306,8 @@ async def _shazam_from_video(chat_id: int, file_id: str):
         # Video ni yuklab olish (20MB gacha bot API, kattaroq pyrogram)
         video_path = os.path.join(tmp_dir, "video.mp4")
         try:
-            file_info = await bot.get_file(file_id)
-            await bot.download_file(file_info.file_path, destination=video_path)
+            if not await download_tg_file(file_id, video_path):
+                raise RuntimeError("download failed")
         except Exception:
             if _pyro_mod.pyro_client:
                 await _pyro_mod.pyro_client.download_media(file_id, file_name=video_path)
@@ -284,7 +344,7 @@ async def _shazam_from_video(chat_id: int, file_id: str):
 
         # YouTube dan qidirish va yuklash
         search_q = f"{artist} {title}"
-        yt_results = await search_music_youtube(search_q, max_results=3)
+        yt_results = await search_music_youtube_fast(search_q, max_results=3)
         if not yt_results:
             await status_msg.edit_text(
                 f"🎵 {artist} - {title}\n⚠️ Yuklab bo'lmadi."
@@ -337,7 +397,7 @@ async def _send_result(
 
     # Rasm yuborish
     if is_photo:
-        input_file = InputFile(file_path)
+        input_file = sendable(file_path)
         sent_msg = await bot.send_photo(
             chat_id=chat_id, photo=input_file,
             caption=caption, parse_mode="HTML",
@@ -365,7 +425,7 @@ async def _send_result(
             except Exception:
                 pass
         else:
-            input_file = InputFile(file_path)
+            input_file = sendable(file_path)
             sent_msg = await bot.send_audio(
                 chat_id=chat_id, audio=input_file,
                 caption=caption, parse_mode="HTML",
@@ -404,7 +464,7 @@ async def _send_result(
                 f"📎 Video hajmi katta ({file_size // (1024*1024)}MB)."
             )
     else:
-        input_file = InputFile(file_path)
+        input_file = sendable(file_path)
         sent_msg = await bot.send_video(
             chat_id=chat_id, video=input_file,
             caption=caption, parse_mode="HTML",
@@ -426,7 +486,7 @@ async def _send_result(
             if vid_file_id:
                 import hashlib as _hl
                 short_key = _hl.md5(vid_file_id.encode()).hexdigest()[:12]
-                _video_file_ids[short_key] = vid_file_id
+                await state_store.set_state(f"vidmusic:{short_key}", vid_file_id, ttl=_VIDMUSIC_TTL)
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton(
                     text="🎵 Musiqani yuklash",

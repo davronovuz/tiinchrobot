@@ -7,13 +7,45 @@ import hashlib
 import re
 import json
 import httpx
+from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
 MAX_CONCURRENT_DOWNLOADS = 12
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
-TEMP_DIR = tempfile.mkdtemp(prefix="tiinchbot_")
+# yt-dlp bloklovchi chaqiruvlar uchun alohida executor (default pool tiqilib qolmasin)
+DOWNLOAD_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="dl")
+
+# Shared volume (local Bot API bilan zero-copy yuborish uchun), bo'lmasa oddiy temp
+_shared_dir = os.getenv("SHARED_TEMP_DIR", "")
+if _shared_dir and os.path.isdir(_shared_dir):
+    TEMP_DIR = os.path.join(_shared_dir, "videos")
+    os.makedirs(TEMP_DIR, exist_ok=True)
+else:
+    TEMP_DIR = tempfile.mkdtemp(prefix="tiinchbot_")
+
+# Global HTTP/2 client — har so'rovda TLS handshake o'rniga connection pool
+_http_client = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            http2=True,
+            follow_redirects=True,
+            timeout=httpx.Timeout(30, read=300, write=300, pool=30),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=40),
+        )
+    return _http_client
+
+
+@asynccontextmanager
+async def _client(**_kw):
+    """Shared client'ni async with sintaksisida ishlatish uchun no-op wrapper"""
+    yield get_http_client()
 
 # Temp fayllar uchun max yosh (5 daqiqa)
 _TEMP_MAX_AGE = 300
@@ -35,8 +67,8 @@ def _cleanup_old_temp_files():
     except Exception:
         pass
 
-# YouTube URL va format ma'lumotlarini vaqtincha saqlash
-_yt_format_cache = {}
+# YouTube URL va format ma'lumotlari Redis da (bot restart bo'lsa yo'qolmaydi)
+_YT_FORMAT_TTL = 900  # 15 daqiqa
 
 # Cobalt API (Docker ichida ishlaydi)
 COBALT_API_URL = os.getenv("COBALT_API_URL", "http://cobalt:9000")
@@ -66,7 +98,32 @@ SUPPORTED_PLATFORMS = {
     "snapchat.com": "Snapchat",
     "likee.video": "Likee",
     "kwai.com": "Kwai",
+    "threads.net": "Threads",
+    "threads.com": "Threads",
+    "soundcloud.com": "SoundCloud",
+    "twitch.tv": "Twitch",
+    "vk.com": "VK",
+    "ok.ru": "OK",
+    "rutube.ru": "Rutube",
+    "bilibili.com": "Bilibili",
+    "tumblr.com": "Tumblr",
+    "9gag.com": "9GAG",
+    "linkedin.com": "LinkedIn",
+    "imgur.com": "Imgur",
+    "streamable.com": "Streamable",
+    "bitchute.com": "BitChute",
+    "odysee.com": "Odysee",
+    "rumble.com": "Rumble",
 }
+
+
+# Media bo'lmagan / ma'nosiz domenlar — universal fallback ishlamaydi
+NON_MEDIA_DOMAINS = (
+    "t.me", "telegram.org", "telegram.me", "telegram.dog",
+    "localhost", "127.0.0.1", "0.0.0.0",
+    "google.com/search", "google.com/maps", "wikipedia.org",
+    "github.com", "chatgpt.com", "claude.ai",
+)
 
 
 def get_platform_from_url(url: str) -> str:
@@ -74,12 +131,21 @@ def get_platform_from_url(url: str) -> str:
     for keyword, platform_name in SUPPORTED_PLATFORMS.items():
         if keyword in lower_url:
             return platform_name
-    return "Unknown"
+    # Universal: domen nomidan platforma nomi (yt-dlp 1800+ saytni qo'llaydi)
+    m = re.search(r'https?://(?:www\.|m\.)?([^/:?#]+)', lower_url)
+    if m:
+        name = m.group(1).split('.')[0]
+        if name:
+            return name.capitalize()
+    return "Video"
 
 
 def is_supported_url(url: str) -> bool:
     lower_url = url.lower()
-    return any(keyword in lower_url for keyword in SUPPORTED_PLATFORMS)
+    if any(d in lower_url for d in NON_MEDIA_DOMAINS):
+        return any(keyword in lower_url for keyword in SUPPORTED_PLATFORMS)
+    # Har qanday http(s) URL — yt-dlp universal fallback sinab ko'radi
+    return lower_url.startswith("http://") or lower_url.startswith("https://")
 
 
 WARP_PROXY = "socks5://warp:9091"
@@ -89,6 +155,7 @@ def _yt_base_opts(use_proxy=False) -> dict:
     """YouTube uchun umumiy yt-dlp opsiyalari — android_vr + bgutil + aria2c"""
     opts = {
         'concurrent_fragment_downloads': 8,
+        'http_chunk_size': 10 * 1024 * 1024,
         'extractor_args': {
             'youtube': {
                 'player_client': ['android_vr'],
@@ -105,6 +172,25 @@ def _yt_base_opts(use_proxy=False) -> dict:
         opts['legacy_server_connect'] = True
         opts['concurrent_fragment_downloads'] = 16
     return opts
+
+
+async def _health_ok(platform: str, elapsed: float):
+    try:
+        from utils import health
+        await health.record_success(platform, elapsed)
+    except Exception:
+        pass
+
+
+async def _health_fail(platform: str, reason: str = ""):
+    try:
+        from utils import health
+        alert = await health.record_failure(platform, reason)
+        if alert:
+            from handlers.users.health_admin import notify_admins_alert
+            await notify_admins_alert(alert)
+    except Exception:
+        pass
 
 
 async def download_video(url: str) -> dict:
@@ -126,15 +212,24 @@ async def download_video(url: str) -> dict:
         if result:
             elapsed = time.monotonic() - start_time
             logger.info(f"[Cobalt] {platform} yuklandi ({elapsed:.1f}s)")
+            await _health_ok(platform, elapsed)
             return result
 
         logger.info(f"[Cobalt] muvaffaqiyatsiz: {platform}, fallback...")
 
         # 2. Platformaga xos fallback
+        if platform == "Twitter":
+            result = await _download_twitter(url)
+            if result:
+                logger.info("[fxtwitter] Twitter/X yuklandi")
+                await _health_ok(platform, time.monotonic() - start_time)
+                return result
+
         if platform == "TikTok":
             result = await _download_tiktok(url)
             if result:
                 logger.info(f"[tikwm] TikTok yuklandi")
+                await _health_ok(platform, time.monotonic() - start_time)
                 return result
 
         if platform == "Instagram":
@@ -142,45 +237,60 @@ async def download_video(url: str) -> dict:
                 result = await _download_instagram_stories(url)
                 if result:
                     logger.info(f"[Instagram Stories] yuklandi")
+                    await _health_ok(platform, time.monotonic() - start_time)
                     return result
             else:
                 result = await _download_instagram_api(url)
                 if result:
                     logger.info(f"[Instagram API] yuklandi")
+                    await _health_ok(platform, time.monotonic() - start_time)
+                    return result
+                # sessionid o'lgan bo'lsa — public postlar uchun embed sahifa
+                result = await _download_instagram_embed(url)
+                if result:
+                    logger.info(f"[Instagram embed] yuklandi")
+                    await _health_ok(platform, time.monotonic() - start_time)
                     return result
 
         if platform == "Pinterest":
             result = await _download_pinterest(url)
             if result:
                 logger.info(f"[Pinterest] yuklandi")
+                await _health_ok(platform, time.monotonic() - start_time)
                 return result
 
         if platform == "Snapchat":
             result = await _download_snapchat(url)
             if result:
                 logger.info(f"[Snapchat] yuklandi")
+                await _health_ok(platform, time.monotonic() - start_time)
                 return result
 
         # 3. yt-dlp + bgutil PO token
+        last_error = ""
         try:
             result = await asyncio.get_event_loop().run_in_executor(
-                None, _download_with_ytdlp, url
+                DOWNLOAD_EXECUTOR, _download_with_ytdlp, url
             )
             if result:
                 elapsed = time.monotonic() - start_time
                 logger.info(f"[yt-dlp] {platform} yuklandi ({elapsed:.1f}s)")
+                await _health_ok(platform, elapsed)
                 return result
+            last_error = "yt-dlp media qaytarmadi"
         except Exception as e:
+            last_error = str(e)
             logger.error(f"[yt-dlp] xatosi: {e}", exc_info=True)
 
         elapsed = time.monotonic() - start_time
         logger.warning(f"BARCHA USULLAR MUVAFFAQIYATSIZ: {platform} - {url} ({elapsed:.1f}s)")
+        await _health_fail(platform, last_error)
         return None
 
 
 async def _download_cobalt(url: str) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with _client() as client:
             resp = await client.post(
                 COBALT_API_URL,
                 json={
@@ -252,10 +362,101 @@ async def _download_cobalt(url: str) -> dict:
     return None
 
 
+async def _download_twitter(url: str) -> dict:
+    """Twitter/X — fxtwitter API (auth kerak emas, <1s, carousel qo'llaydi)"""
+    m = re.search(r'(?:twitter|x)\.com/([^/]+)/status/(\d+)', url, re.I)
+    if not m:
+        return None
+    username, tweet_id = m.group(1), m.group(2)
+
+    try:
+        client = get_http_client()
+        resp = await client.get(
+            f"https://api.fxtwitter.com/{username}/status/{tweet_id}",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[fxtwitter] HTTP {resp.status_code}")
+            return None
+
+        tweet = (resp.json() or {}).get("tweet") or {}
+        media = tweet.get("media") or {}
+        items = media.get("all") or []
+        if not items:
+            return None
+
+        title = (tweet.get("text") or "Twitter")[:100]
+        results = []
+        for i, item in enumerate(items):
+            media_url = item.get("url")
+            if item.get("type") == "video" or item.get("type") == "gif":
+                variants = item.get("variants") or []
+                if variants:
+                    best = max(variants, key=lambda v: v.get("bitrate", 0))
+                    media_url = best.get("url") or media_url
+            if not media_url:
+                continue
+            r = await _stream_download(media_url, "Twitter", url, item_index=i)
+            if r:
+                r['title'] = title
+                results.append(r)
+
+        if not results:
+            return None
+        if len(results) == 1:
+            return results[0]
+        return {'media_list': results, 'platform': 'Twitter'}
+
+    except Exception as e:
+        logger.error(f"[fxtwitter] xatolik: {e}")
+    return None
+
+
+async def _download_instagram_embed(url: str) -> dict:
+    """Instagram public post — embed sahifadan (sessionid kerak emas)"""
+    shortcode = _extract_instagram_shortcode(url)
+    if not shortcode:
+        return None
+    try:
+        client = get_http_client()
+        resp = await client.get(
+            f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[Instagram embed] HTTP {resp.status_code}")
+            return None
+
+        html = resp.text
+
+        vid = re.search(r'"video_url":"([^"]+)"', html)
+        if vid:
+            return await _stream_download(vid.group(1).replace("\\u0026", "&").replace("\\/", "/"),
+                                          "Instagram", url)
+
+        img = re.search(r'"display_url":"([^"]+)"', html)
+        if not img:
+            img = re.search(r'class="EmbeddedMediaImage"[^>]+src="([^"]+)"', html)
+        if img:
+            return await _stream_download(img.group(1).replace("\\u0026", "&").replace("&amp;", "&").replace("\\/", "/"),
+                                          "Instagram", url)
+
+        logger.warning("[Instagram embed] media topilmadi")
+    except Exception as e:
+        logger.error(f"[Instagram embed] xatolik: {e}")
+    return None
+
+
 async def _download_pinterest(url: str) -> dict:
     """Pinterest rasm/video yuklash — HTML dan pinimg URL olish"""
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with _client() as client:
             resp = await client.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             })
@@ -292,7 +493,7 @@ async def _download_pinterest(url: str) -> dict:
 async def _download_snapchat(url: str) -> dict:
     """Snapchat Spotlight/Story video yuklash — HTML dan bolt-gcdn URL olish"""
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with _client() as client:
             resp = await client.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             })
@@ -321,7 +522,7 @@ async def _download_snapchat(url: str) -> dict:
 
 async def _download_tiktok(url: str) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with _client() as client:
             resp = await client.get(
                 "https://www.tikwm.com/api/",
                 params={"url": url, "hd": 1},
@@ -335,6 +536,21 @@ async def _download_tiktok(url: str) -> dict:
                 return None
 
             video_data = data["data"]
+
+            # Rasm-karusel (photo slide post) — TikTok da video o'rniga rasmlar
+            images = video_data.get("images") or []
+            if images:
+                media_list = []
+                for i, img_url in enumerate(images[:10]):
+                    r = await _stream_download(img_url, "TikTok", url, item_index=i)
+                    if r:
+                        r['title'] = (video_data.get("title") or "TikTok")[:100]
+                        media_list.append(r)
+                if media_list:
+                    if len(media_list) == 1:
+                        return media_list[0]
+                    return {'media_list': media_list, 'platform': 'TikTok'}
+
             video_url = video_data.get("hdplay") or video_data.get("play")
             if not video_url:
                 return None
@@ -551,7 +767,7 @@ async def _download_story_item(item: dict, original_url: str) -> dict:
         if img_url:
             file_path = os.path.join(TEMP_DIR, f"story_{hash(original_url) & 0xFFFFFFFF}.jpg")
             try:
-                async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                async with _client() as client:
                     async with client.stream("GET", img_url, headers={"User-Agent": "Mozilla/5.0"}) as stream:
                         if stream.status_code != 200:
                             return None
@@ -582,7 +798,7 @@ async def _download_story_item(item: dict, original_url: str) -> dict:
 
 async def _stream_download(download_url: str, platform: str, original_url: str, item_index: int = 0) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+        async with _client() as client:
             async with client.stream(
                 "GET", download_url,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
@@ -670,7 +886,14 @@ def _download_with_ytdlp(url: str) -> dict:
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'mp4',
             }],
+            'concurrent_fragment_downloads': 8,
         }
+
+        # aria2c — to'g'ridan-to'g'ri HTTP yuklashlar uchun parallel ulanish (3-5x tez).
+        # Proxy bilan va YouTube'da ishlatilmaydi (HLS/DASH native qoladi).
+        if not use_proxy and platform != "YouTube":
+            ydl_opts['external_downloader'] = {'http': 'aria2c', 'https': 'aria2c'}
+            ydl_opts['external_downloader_args'] = {'aria2c': ['-x', '8', '-s', '8', '-k', '1M']}
 
         if platform == "YouTube":
             ydl_opts.update(_yt_base_opts(use_proxy=use_proxy))
@@ -712,7 +935,34 @@ def _download_with_ytdlp(url: str) -> dict:
                 'height': info.get('height', 0),
             }
 
-    # 1. Proxysiz (tez)
+    import time as _time
+    is_youtube = (platform == "YouTube")
+
+    if is_youtube:
+        # YouTube uchun WARP proxy ASOSIY — server datacenter IP bot-tekshiruvda
+        # bloklangan ("Sign in to confirm you're not a bot"). 3 marta urinamiz.
+        for attempt in range(3):
+            try:
+                result = _try_download(use_proxy=True)
+                if result:
+                    return result
+            except Exception as e:
+                if attempt < 2:
+                    wait_time = (attempt + 1) * 2
+                    logger.info(f"[yt-dlp] YouTube WARP {attempt+1}-urinish xato, {wait_time}s kutish: {e}")
+                    _time.sleep(wait_time)
+                else:
+                    logger.error(f"[yt-dlp] YouTube WARP 3-urinish ham xato: {e}")
+        # Proxysiz — oxirgi chora
+        try:
+            result = _try_download(use_proxy=False)
+            if result:
+                return result
+        except Exception as e:
+            logger.info(f"[yt-dlp] YouTube proxysiz ham xato: {e}")
+        return None
+
+    # Boshqa platformalar (Instagram, TikTok, ...): proxysiz tez yo'l birinchi
     try:
         result = _try_download(use_proxy=False)
         if result:
@@ -720,7 +970,7 @@ def _download_with_ytdlp(url: str) -> dict:
     except Exception as e:
         logger.info(f"[yt-dlp] {platform} proxysiz xato, WARP fallback: {e}")
 
-    # 2. IP bloklangan bo'lsa — WARP proxy bilan (3 marta urinish, exponential backoff)
+    # IP bloklangan bo'lsa — WARP proxy bilan (3 marta urinish, exponential backoff)
     for attempt in range(3):
         try:
             result = _try_download(use_proxy=True)
@@ -730,7 +980,6 @@ def _download_with_ytdlp(url: str) -> dict:
             if attempt < 2:
                 wait_time = (attempt + 1) * 2  # 2s, 4s
                 logger.info(f"[yt-dlp] {platform} WARP {attempt+1}-urinish xato, {wait_time}s kutish: {e}")
-                import time as _time
                 _time.sleep(wait_time)
             else:
                 logger.error(f"[yt-dlp] {platform} WARP 3-urinish ham xato: {e}")
@@ -744,6 +993,16 @@ def cleanup_file(file_path: str):
             os.unlink(file_path)
     except Exception as e:
         logger.error(f"Faylni o'chirishda xatolik: {e}")
+
+
+async def close_http_client():
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        try:
+            await _http_client.aclose()
+        except Exception:
+            pass
+    _http_client = None
 
 
 def cleanup_temp_dir():
@@ -774,18 +1033,18 @@ def _format_filesize(size_bytes) -> str:
 async def get_youtube_formats(url: str) -> dict:
     try:
         result = await asyncio.get_event_loop().run_in_executor(
-            None, _extract_youtube_formats, url
+            DOWNLOAD_EXECUTOR, _extract_youtube_formats, url
         )
         if result:
+            from utils import state_store
             url_hash = make_url_hash(url)
-            _yt_format_cache[url_hash] = {
+            await state_store.set_state(f"ytfmt:{url_hash}", {
                 "url": url,
                 "formats": result["formats"],
                 "title": result["title"],
                 "thumbnail": result.get("thumbnail", ""),
                 "duration": result.get("duration", 0),
-                "timestamp": time.monotonic(),
-            }
+            }, ttl=_YT_FORMAT_TTL)
             result["url_hash"] = url_hash
             return result
     except Exception as e:
@@ -810,10 +1069,14 @@ def _extract_youtube_formats(url: str) -> dict:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url, download=False)
 
+    # WARP proxy ASOSIY — server IP YouTube bot-tekshiruvida bloklangan
     try:
-        info = _try_extract(use_proxy=False)
-    except Exception:
         info = _try_extract(use_proxy=True)
+    except Exception:
+        try:
+            info = _try_extract(use_proxy=False)
+        except Exception:
+            info = None
 
     if not info:
         return None
@@ -910,33 +1173,33 @@ def _extract_youtube_formats(url: str) -> dict:
 
 
 async def download_youtube_with_format(url_hash: str, format_id: str) -> dict:
-    cache_entry = _yt_format_cache.get(url_hash)
+    from utils import state_store
+    cache_entry = await state_store.get_state(f"ytfmt:{url_hash}")
     if not cache_entry:
         return None
 
     url = cache_entry["url"]
-
-    if time.monotonic() - cache_entry["timestamp"] > 600:
-        _yt_format_cache.pop(url_hash, None)
-        return None
 
     async with download_semaphore:
         start_time = time.monotonic()
 
         if format_id == "audio":
             result = await asyncio.get_event_loop().run_in_executor(
-                None, _download_youtube_audio, url
+                DOWNLOAD_EXECUTOR, _download_youtube_audio, url
             )
         else:
             result = await asyncio.get_event_loop().run_in_executor(
-                None, _download_youtube_format, url, format_id
+                DOWNLOAD_EXECUTOR, _download_youtube_format, url, format_id
             )
 
         if result:
             elapsed = time.monotonic() - start_time
             logger.info(f"[YouTube format] yuklandi: {format_id} ({elapsed:.1f}s)")
+            await _health_ok("YouTube", elapsed)
+        else:
+            await _health_fail("YouTube", f"format {format_id} yuklanmadi")
 
-        _yt_format_cache.pop(url_hash, None)
+        await state_store.delete_state(f"ytfmt:{url_hash}")
         return result
 
 
@@ -996,27 +1259,27 @@ def _download_youtube_format(url: str, format_id: str) -> dict:
                 'height': info.get('height', 0),
             }
 
-    # Proxysiz
+    # WARP proxy ASOSIY — 3 marta urinish (server IP bloklangan)
+    for attempt in range(3):
+        try:
+            result = _try(use_proxy=True)
+            if result:
+                return result
+        except Exception as e:
+            if attempt < 2:
+                logger.info(f"[YouTube format] WARP {attempt+1}-urinish xato: {e}")
+                import time as _time
+                _time.sleep(2)
+            else:
+                logger.error(f"[YouTube format] WARP 3-urinish ham xato: {e}", exc_info=True)
+
+    # Proxysiz — oxirgi chora
     try:
         result = _try(use_proxy=False)
         if result:
             return result
     except Exception:
         pass
-
-    # WARP proxy — 2 marta urinish
-    for attempt in range(2):
-        try:
-            result = _try(use_proxy=True)
-            if result:
-                return result
-        except Exception as e:
-            if attempt == 0:
-                logger.info(f"[YouTube format] WARP 1-urinish xato: {e}")
-                import time as _time
-                _time.sleep(2)
-            else:
-                logger.error(f"[YouTube format] WARP 2-urinish ham xato: {e}", exc_info=True)
 
     return None
 
@@ -1077,7 +1340,21 @@ def _download_youtube_audio(url: str) -> dict:
                 'is_audio': True,
             }
 
-    # Proxysiz
+    # WARP proxy ASOSIY — 3 marta urinish (server IP bloklangan)
+    for attempt in range(3):
+        try:
+            result = _try(use_proxy=True)
+            if result:
+                return result
+        except Exception as e:
+            if attempt < 2:
+                logger.info(f"[YouTube audio] WARP {attempt+1}-urinish xato: {e}")
+                import time as _time
+                _time.sleep(2)
+            else:
+                logger.error(f"[YouTube audio] WARP 3-urinish ham xato: {e}", exc_info=True)
+
+    # Proxysiz — oxirgi chora
     try:
         result = _try(use_proxy=False)
         if result:
@@ -1085,25 +1362,12 @@ def _download_youtube_audio(url: str) -> dict:
     except Exception:
         pass
 
-    # WARP proxy — 2 marta urinish
-    for attempt in range(2):
-        try:
-            result = _try(use_proxy=True)
-            if result:
-                return result
-        except Exception as e:
-            if attempt == 0:
-                logger.info(f"[YouTube audio] WARP 1-urinish xato: {e}")
-                import time as _time
-                _time.sleep(2)
-            else:
-                logger.error(f"[YouTube audio] WARP 2-urinish ham xato: {e}", exc_info=True)
-
     return None
 
 
-def get_cached_yt_url(url_hash: str) -> str:
-    entry = _yt_format_cache.get(url_hash)
+async def get_cached_yt_url(url_hash: str) -> str:
+    from utils import state_store
+    entry = await state_store.get_state(f"ytfmt:{url_hash}")
     if entry:
         return entry["url"]
     return None

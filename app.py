@@ -1,3 +1,9 @@
+try:
+    import uvloop
+    uvloop.install()
+except ImportError:
+    pass
+
 from aiogram import executor
 import redis.asyncio as aioredis
 import logging
@@ -7,7 +13,7 @@ import middlewares, filters, handlers
 from utils.notify_admins import on_startup_notify
 from utils.set_bot_commands import set_default_commands
 from utils.pyrogram_client import start_pyrogram, stop_pyrogram
-from utils.video_downloader import cleanup_temp_dir
+from utils.video_downloader import cleanup_temp_dir, close_http_client
 from data.config import DATABASE_URL, REDIS_HOST, REDIS_PORT
 import loader
 
@@ -59,6 +65,9 @@ async def on_shutdown(dispatcher):
 
     # Vaqtinchalik fayllarni tozalash
     cleanup_temp_dir()
+
+    # Shared HTTP client
+    await close_http_client()
 
     # Redis ni yopish
     if loader.redis_client:
