@@ -33,8 +33,9 @@ services:
       COBALT_API_URL: "http://cobalt:9000"
       COOKIES_FILE: "/app/cookies.txt"
       BGUTIL_URL: "http://bgutil:4416"
-      # Local Bot API — 2GB limit, tez upload. O'chirish uchun bu qatorni kommentga oling.
-      BOT_API_URL: "http://telegram-bot-api:8081"
+      # Local Bot API — 2GB limit, tez upload. .env dagi BOT_API_URL bilan boshqariladi;
+      # bo'sh bo'lsa rasmiy cloud API ishlatiladi (Pyrogram katta fayllar uchun zaxira).
+      BOT_API_URL: "${BOT_API_URL:-}"
       SHARED_TEMP_DIR: "/shared_media"
     networks:
       - botnet
