@@ -10,6 +10,17 @@ from aiogram.utils.exceptions import BotBlocked, ChatNotFound, RetryAfter, Unaut
 
 advertisements = []
 
+# FSM (Redis) faqat JSON saqlay oladi. Message va InlineKeyboardMarkup obyektlari
+# JSON emas — ularni xotirada, admin ID si bo'yicha saqlaymiz. Reklamalar ro'yxati
+# (`advertisements`) ham xotirada, shuning uchun umr davomiyligi bir xil.
+_pending_content = {}
+_pending_keyboard = {}
+
+
+def _clear_pending(user_id: int):
+    _pending_content.pop(user_id, None)
+    _pending_keyboard.pop(user_id, None)
+
 class ReklamaTuriState(StatesGroup):
     tur = State()
     vaqt = State()
@@ -184,7 +195,7 @@ async def handle_time_input(message: types.Message, state: FSMContext):
         send_time = send_time.replace(year=now.year, month=now.month, day=now.day)
         if send_time < now:
             send_time += datetime.timedelta(days=1)
-        await state.update_data(send_time_value=send_time)
+        await state.update_data(send_time_value=send_time.isoformat())
         await ReklamaTuriState.content.set()
         await message.reply("Reklama kontentini yuboring:", reply_markup=get_cancel_keyboard())
     except ValueError:
@@ -197,11 +208,11 @@ async def rek_state(message: types.Message, state: FSMContext):
         data = await state.get_data()
         ad_type = data.get('ad_type')
         if ad_type == 'ad_type_button':
-            await state.update_data(ad_content=message)
+            _pending_content[telegram_id] = message
             await ReklamaTuriState.buttons.set()
             await message.reply("Iltimos, tugmalarni quyidagi formatda yuboring:\nButton1 Text - URL1, Button2 Text - URL2", reply_markup=get_cancel_keyboard())
         else:
-            await state.update_data(ad_content=message)
+            _pending_content[telegram_id] = message
             await bot.send_message(chat_id=message.chat.id, text="Reklamani yuborishni tasdiqlaysizmi?", reply_markup=get_confirm_keyboard())
     else:
         await message.reply("Sizda ushbu amalni bajarish uchun ruxsat yo'q.")
@@ -223,21 +234,38 @@ async def handle_buttons_input(message: types.Message, state: FSMContext):
         return
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(*buttons)
-    await state.update_data(keyboard=keyboard)
+    _pending_keyboard[message.from_user.id] = keyboard
     await bot.send_message(chat_id=message.chat.id, text="Reklamani yuborishni tasdiqlaysizmi?", reply_markup=get_confirm_keyboard())
 
 @dp.callback_query_handler(lambda c: c.data == "cancel_ad", state='*')
 async def cancel_ad_handler(callback_query: types.CallbackQuery, state: FSMContext):
+    _clear_pending(callback_query.from_user.id)
     await state.finish()
     await callback_query.message.edit_text("Reklama yuborish bekor qilindi 🤖❌")
 
 @dp.callback_query_handler(lambda c: c.data == "confirm_ad", state='*')
 async def confirm_ad_handler(callback_query: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
+    user_id = callback_query.from_user.id
     ad_type = data.get('ad_type')
-    ad_content = data.get('ad_content')
-    keyboard = data.get('keyboard')
-    send_time = data.get('send_time_value') if data.get('send_time') == 'send_later' else None
+    ad_content = _pending_content.get(user_id)
+    keyboard = _pending_keyboard.get(user_id)
+
+    if not ad_content:
+        await state.finish()
+        await callback_query.message.edit_text(
+            "⚠️ Reklama kontenti topilmadi (bot qayta ishga tushgan bo'lishi mumkin).\n"
+            "Iltimos, /reklom bilan qaytadan boshlang."
+        )
+        return
+
+    send_time = None
+    if data.get('send_time') == 'send_later' and data.get('send_time_value'):
+        try:
+            send_time = datetime.datetime.fromisoformat(data['send_time_value'])
+        except (ValueError, TypeError):
+            send_time = None
+
     ad_id = len(advertisements) + 1
     advertisement = Advertisement(
         ad_id=ad_id,
@@ -248,6 +276,7 @@ async def confirm_ad_handler(callback_query: types.CallbackQuery, state: FSMCont
         creator_id=callback_query.from_user.id
     )
     advertisements.append(advertisement)
+    _clear_pending(user_id)
     await state.finish()
     await callback_query.message.edit_text(f"Reklama #{ad_id} yuborish jadvalga qo'shildi.")
     advertisement.task = asyncio.create_task(advertisement.start())
